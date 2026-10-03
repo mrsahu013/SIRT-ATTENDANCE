@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { ref, set, get, child, push, remove } from 'firebase/database';
+import { ref, set, get, child, push, update, remove } from 'firebase/database';
 import { useRouter } from 'next/navigation';
 import html2canvas from 'html2canvas';
 
@@ -11,12 +11,16 @@ export default function Home() {
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [crData, setCrData] = useState(null);
+  const [hasProfile, setHasProfile] = useState(false);
   const [students, setStudents] = useState({});
   const [studentName, setStudentName] = useState('');
   const [studentRoll, setStudentRoll] = useState('');
   
+  // Edit student state
+  const [editingStudentId, setEditingStudentId] = useState(null);
+  
   const todayStr = new Date().toISOString().split('T')[0];
-  const MASTER_ADMIN_EMAIL = "mrsahu@gmail.com"; // Change to your admin email
+  const MASTER_ADMIN_EMAIL = "mrsahu@gmail.com";
 
   // Attendance state
   const [attendance, setAttendance] = useState({});
@@ -30,14 +34,28 @@ export default function Home() {
       if (!currentUser) {
         setLoadingAuth(false);
         setUser(null);
+        setHasProfile(false);
+        router.push('/login');
       } else {
         setUser(currentUser);
-        setLoadingAuth(false);
         const dbRef = ref(db);
         
-        // Fetch CR Profile
+        // Fetch CR Profile from database
         const crSnap = await get(child(dbRef, `users/${currentUser.uid}`));
-        if (crSnap.exists()) setCrData(crSnap.val());
+        
+        // Check if profile exists and has tgName
+        if (!crSnap.exists() || !crSnap.val().tgName) {
+          setHasProfile(false);
+          setLoadingAuth(false);
+          await signOut(auth);
+          router.push('/login');
+          return;
+        }
+
+        // Profile and tgName exist
+        setHasProfile(true);
+        setCrData(crSnap.val());
+        setLoadingAuth(false);
 
         // Fetch Students
         const studentsSnap = await get(child(dbRef, `students/${currentUser.uid}`));
@@ -69,31 +87,94 @@ export default function Home() {
     return () => unsubscribe();
   }, [router]);
 
-  const handleAddStudent = async (e) => {
+  const handleAddOrUpdateStudent = async (e) => {
     e.preventDefault();
-    if (!user) return;
+    if (!user || !hasProfile) {
+      alert("Error: You must complete your CR registration first!");
+      router.push('/login');
+      return;
+    }
 
-    const existingRolls = Object.values(students).map(s => s.rollNumber);
-    if (existingRolls.includes(studentRoll)) {
+    // Check if roll number already exists for a DIFFERENT student
+    const duplicateEntry = Object.entries(students).find(
+      ([id, s]) => s.rollNumber === studentRoll && id !== editingStudentId
+    );
+    if (duplicateEntry) {
       alert("Error: This Roll Number already exists in your list!");
       return;
     }
 
-    const newStudentRef = push(ref(db, `students/${user.uid}`));
-    await set(newStudentRef, { name: studentName, rollNumber: studentRoll });
+    if (editingStudentId) {
+      // Update existing student
+      const studentRef = ref(db, `students/${user.uid}/${editingStudentId}`);
+      await update(studentRef, { name: studentName, rollNumber: studentRoll });
 
-    setStudents({ ...students, [newStudentRef.key]: { name: studentName, rollNumber: studentRoll } });
-    setAttendance({ ...attendance, [newStudentRef.key]: true });
+      setStudents(prev => ({
+        ...prev,
+        [editingStudentId]: { name: studentName, rollNumber: studentRoll }
+      }));
+      
+      setEditingStudentId(null);
+      alert("Student details updated successfully!");
+    } else {
+      // Add new student
+      const newStudentRef = push(ref(db, `students/${user.uid}`));
+      await set(newStudentRef, { name: studentName, rollNumber: studentRoll });
+
+      setStudents(prev => ({ ...prev, [newStudentRef.key]: { name: studentName, rollNumber: studentRoll } }));
+      setAttendance(prev => ({ ...prev, [newStudentRef.key]: true }));
+      alert("Student added successfully!");
+    }
+
     setStudentName('');
     setStudentRoll('');
   };
 
+  const handleEditClick = (id, student) => {
+    setEditingStudentId(id);
+    setStudentName(student.name);
+    setStudentRoll(student.rollNumber);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingStudentId(null);
+    setStudentName('');
+    setStudentRoll('');
+  };
+
+  const handleDeleteStudent = async (id) => {
+    if (!confirm("Are you sure you want to remove this student from your list?")) return;
+    
+    await remove(ref(db, `students/${user.uid}/${id}`));
+    setStudents(prev => {
+      const updated = { ...prev };
+      delete updated[id];
+      return updated;
+    });
+
+    setAttendance(prev => {
+      const updated = { ...prev };
+      delete updated[id];
+      return updated;
+    });
+    
+    if (editingStudentId === id) {
+      handleCancelEdit();
+    }
+  };
+
   const handleAttendanceChange = (id) => {
-    setAttendance({ ...attendance, [id]: !attendance[id] });
+    setAttendance(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
   const submitAttendance = async () => {
-    if (!user) return;
+    if (!user || !hasProfile) {
+      alert("Error: You must complete your CR registration first!");
+      router.push('/login');
+      return;
+    }
+
     const presentList = [];
     const absentList = [];
 
@@ -215,24 +296,42 @@ export default function Home() {
             </button>
           )}
           <button 
-            onClick={() => signOut(auth).then(() => setUser(null))} 
+            onClick={() => signOut(auth).then(() => { setUser(null); setHasProfile(false); router.push('/login'); })} 
             className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-rose-500 hover:text-white transition-all">
             Logout
           </button>
         </div>
       </div>
 
-      {/* Add Student Section */}
-      <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
-        <h2 className="text-lg font-semibold mb-4 text-slate-200">Add Student to Class List</h2>
-        <form onSubmit={handleAddStudent} className="flex flex-col sm:flex-row gap-3">
+      {/* Add / Edit Student Section */}
+      <div className={`max-w-4xl mx-auto bg-slate-900 border rounded-2xl shadow-xl p-6 mb-6 transition-all ${editingStudentId ? 'border-amber-500/50 shadow-amber-500/10' : 'border-slate-800'}`}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className={`text-lg font-semibold ${editingStudentId ? 'text-amber-400 flex items-center gap-2' : 'text-slate-200'}`}>
+            {editingStudentId ? (
+              <>
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+                Editing Student Mode Active
+              </>
+            ) : (
+              "Add Student to Class List"
+            )}
+          </h2>
+          {editingStudentId && (
+            <button 
+              onClick={handleCancelEdit} 
+              className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg transition-all border border-slate-700">
+              Cancel Edit
+            </button>
+          )}
+        </div>
+        <form onSubmit={handleAddOrUpdateStudent} className="flex flex-col sm:flex-row gap-3">
           <input 
             type="text" 
             placeholder="Student Name" 
             value={studentName} 
             onChange={(e) => setStudentName(e.target.value)} 
             required 
-            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 flex-1" 
+            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 flex-1 text-slate-100" 
           />
           <input 
             type="text" 
@@ -240,31 +339,46 @@ export default function Home() {
             value={studentRoll} 
             onChange={(e) => setStudentRoll(e.target.value)} 
             required 
-            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 sm:w-48" 
+            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 sm:w-48 text-slate-100" 
           />
-          <button type="submit" className="bg-gradient-to-r from-emerald-500 to-teal-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-lg shadow-emerald-900/20">
-            Add Student
+          <button type="submit" className={`px-6 py-3 rounded-xl text-sm font-semibold text-white transition-all shadow-lg ${editingStudentId ? 'bg-gradient-to-r from-amber-500 to-orange-600 shadow-orange-900/20 hover:opacity-90' : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-900/20 hover:opacity-90'}`}>
+            {editingStudentId ? "Update Student" : "Add Student"}
           </button>
         </form>
       </div>
 
-      {/* Student List Display */}
+      {/* Student List Display with Edit & Delete Options */}
       {sortedStudentsList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
           <h2 className="text-lg font-semibold mb-4 text-slate-200">Enrolled Students ({sortedStudentsList.length})</h2>
-          <div className="overflow-x-auto max-h-60 overflow-y-auto border border-slate-800 rounded-xl">
+          <div className="overflow-x-auto max-h-72 overflow-y-auto border border-slate-800 rounded-xl">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs">
                   <th className="p-3">Roll Number</th>
                   <th className="p-3">Student Name</th>
+                  <th className="p-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-sm">
                 {sortedStudentsList.map(([id, s]) => (
-                  <tr key={id} className="hover:bg-slate-950/40">
+                  <tr key={id} className={`transition-colors ${editingStudentId === id ? 'bg-amber-500/10 border-l-4 border-amber-500' : 'hover:bg-slate-950/40'}`}>
                     <td className="p-3 font-semibold text-cyan-400">{s.rollNumber}</td>
                     <td className="p-3 text-slate-300">{s.name}</td>
+                    <td className="p-3 text-right space-x-2">
+                      <button 
+                        type="button"
+                        onClick={() => handleEditClick(id, s)}
+                        className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-cyan-500 hover:text-slate-950 transition-all cursor-pointer">
+                        Edit
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => handleDeleteStudent(id)}
+                        className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-rose-500 hover:text-white transition-all cursor-pointer">
+                        Delete
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

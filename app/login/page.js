@@ -1,18 +1,22 @@
 // app/login/page.js
-'use client';
+"use client";
 import { useState } from 'react';
-import { auth } from '@/lib/firebase';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { auth, db } from '@/lib/firebase';
+import { 
+  signInWithEmailAndPassword, 
+  GoogleAuthProvider, 
+  signInWithPopup 
+} from 'firebase/auth';
+import { ref, get, child } from 'firebase/database';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 
-export default function LoginPage() {
+export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const router = useRouter();
 
-  const handleLogin = async (e) => {
+  const handleEmailLogin = async (e) => {
     e.preventDefault();
     try {
       await signInWithEmailAndPassword(auth, email, password);
@@ -22,54 +26,71 @@ export default function LoginPage() {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+
+      // Check if CR profile details already exist in the database
+      const dbRef = ref(db);
+      const snapshot = await get(child(dbRef, `users/${user.uid}`));
+
+      if (snapshot.exists()) {
+        // Profile exists, go to dashboard
+        router.push('/');
+      } else {
+        // First time Google login, redirect to register/details page
+        router.push('/register');
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6 font-sans">
       <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl">
-        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500 mb-2 text-center">
+        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500 mb-6 text-center">
           CR Portal Login
         </h1>
-        <p className="text-slate-400 text-sm text-center mb-6">Sign in to manage your class attendance</p>
-        
         {error && <p className="text-rose-400 bg-rose-500/10 border border-rose-500/20 p-3 rounded-xl mb-4 text-sm">{error}</p>}
         
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 mb-1">Email Address</label>
-            <input 
-              type="email" 
-              placeholder="Enter your email" 
-              value={email} 
-              onChange={(e) => setEmail(e.target.value)} 
-              required 
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-200 placeholder:text-slate-500" 
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 mb-1">Password</label>
-            <input 
-              type="password" 
-              placeholder="Enter your password" 
-              value={password} 
-              onChange={(e) => setPassword(e.target.value)} 
-              required 
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-200 placeholder:text-slate-500" 
-            />
-          </div>
-          
+        <form onSubmit={handleEmailLogin} className="space-y-4">
+          <input 
+            type="email" 
+            placeholder="Email Address" 
+            value={email} 
+            onChange={(e) => setEmail(e.target.value)} 
+            required 
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-200 placeholder:text-slate-500" 
+          />
+          <input 
+            type="password" 
+            placeholder="Password" 
+            value={password} 
+            onChange={(e) => setPassword(e.target.value)} 
+            required 
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-200 placeholder:text-slate-500" 
+          />
           <button 
             type="submit" 
-            className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white p-3.5 rounded-xl font-semibold hover:opacity-90 transition-all shadow-lg shadow-cyan-900/20 mt-2">
-            Login
+            className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white p-3.5 rounded-xl font-semibold hover:opacity-90 transition-all shadow-lg shadow-cyan-900/20">
+            Login with Email
           </button>
         </form>
 
-        <div className="text-center mt-6 text-sm text-slate-400">
-          Don't have an account?{' '}
-          <Link href="/register" className="text-cyan-400 font-medium hover:underline">
-            Register as CR
-          </Link>
+        <div className="relative flex py-5 items-center">
+          <div className="flex-grow border-t border-slate-800"></div>
+          <span className="flex-shrink mx-4 text-slate-500 text-xs uppercase">Or</span>
+          <div className="flex-grow border-t border-slate-800"></div>
         </div>
+
+        <button 
+          onClick={handleGoogleLogin}
+          className="w-full bg-slate-800 border border-slate-700 text-slate-200 p-3.5 rounded-xl font-semibold hover:bg-slate-700 transition-all flex items-center justify-center gap-2">
+          <span>Sign in with Google</span>
+        </button>
       </div>
     </div>
   );
