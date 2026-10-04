@@ -20,7 +20,7 @@ export default function Home() {
   const [editingStudentId, setEditingStudentId] = useState(null);
   
   const todayStr = new Date().toISOString().split('T')[0];
-  const MASTER_ADMIN_EMAIL = "mrsahu@gmail.com";
+  const MASTER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_MASTER_ADMIN_EMAIL;
 
   // Attendance state
   const [attendance, setAttendance] = useState({});

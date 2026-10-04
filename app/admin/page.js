@@ -18,7 +18,7 @@ export default function AdminDashboard() {
   const [searchQuery, setSearchQuery] = useState(''); // Added search state
   const router = useRouter();
 
-  const MASTER_ADMIN_EMAIL = "mrsahu@gmail.com"; // Your admin email
+  const MASTER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_MASTER_ADMIN_EMAIL; // Your admin email
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
