@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="100%" stop-color="#2563eb" />
+    </linearGradient>
+  </defs>
+  <!-- Rounded background card with cyan-to-blue gradient -->
+  <rect width="64" height="64" rx="16" fill="url(#grad)" />
+  
+  <!-- Clipboard lines -->
+  <path d="M22 22h20M22 32h20M22 42h10" stroke="#020617" stroke-width="4" stroke-linecap="round" />
+  
+  <!-- Checkmark -->
+  <path d="M40 38l4 4 8-8" fill="none" stroke="#020617" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
