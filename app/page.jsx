@@ -1,4 +1,4 @@
-// app/page.js
+// app/page.jsx
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import { auth, db } from '@/lib/firebase';
@@ -18,6 +18,20 @@ export default function Home() {
   
   // Edit student state
   const [editingStudentId, setEditingStudentId] = useState(null);
+  
+  // Bulk upload state
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [bulkInput, setBulkInput] = useState('');
+  const [uploadStatus, setUploadStatus] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [duplicateWarnings, setDuplicateWarnings] = useState([]);
+  const fileInputRef = useRef(null);
+  
+  // Roll range generator state
+  const [rollPrefix, setRollPrefix] = useState('0133CI25');
+  const [rangeStart, setRangeStart] = useState('1178');
+  const [rangeEnd, setRangeEnd] = useState('1250');
+  const [showGenerator, setShowGenerator] = useState(false);
   
   const todayStr = new Date().toISOString().split('T')[0];
   const MASTER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_MASTER_ADMIN_EMAIL;
@@ -95,7 +109,6 @@ export default function Home() {
       return;
     }
 
-    // Check if roll number already exists for a DIFFERENT student
     const duplicateEntry = Object.entries(students).find(
       ([id, s]) => s.rollNumber === studentRoll && id !== editingStudentId
     );
@@ -105,7 +118,6 @@ export default function Home() {
     }
 
     if (editingStudentId) {
-      // Update existing student
       const studentRef = ref(db, `students/${user.uid}/${editingStudentId}`);
       await update(studentRef, { name: studentName, rollNumber: studentRoll });
 
@@ -115,19 +127,173 @@ export default function Home() {
       }));
       
       setEditingStudentId(null);
-      alert("Student details updated successfully!");
     } else {
-      // Add new student
       const newStudentRef = push(ref(db, `students/${user.uid}`));
       await set(newStudentRef, { name: studentName, rollNumber: studentRoll });
 
       setStudents(prev => ({ ...prev, [newStudentRef.key]: { name: studentName, rollNumber: studentRoll } }));
       setAttendance(prev => ({ ...prev, [newStudentRef.key]: true }));
-      alert("Student added successfully!");
     }
 
     setStudentName('');
     setStudentRoll('');
+  };
+
+  // Generate roll numbers from range
+  const generateRollRange = () => {
+    const start = parseInt(rangeStart, 10);
+    const end = parseInt(rangeEnd, 10);
+
+    if (isNaN(start) || isNaN(end) || start > end) {
+      setDuplicateWarnings(['❌ Invalid range! Start must be smaller than End.']);
+      return;
+    }
+    if (end - start > 300) {
+      setDuplicateWarnings(['❌ Range too large! Maximum 300 students at once.']);
+      return;
+    }
+
+    const padLength = rangeStart.length;
+    const lines = [];
+    for (let i = start; i <= end; i++) {
+      const num = String(i).padStart(padLength, '0');
+      lines.push(`Student ${num},${rollPrefix.trim()}${num}`);
+    }
+
+    setBulkInput(lines.join('\n'));
+    setDuplicateWarnings([]);
+    setUploadStatus(`✓ Generated ${lines.length} roll numbers! Edit the names below.`);
+    setTimeout(() => setUploadStatus(''), 4000);
+  };
+
+  // Validate and preview bulk data BEFORE uploading
+  const validateBulkData = () => {
+    const lines = bulkInput.trim().split('\n').filter(line => line.trim());
+    
+    if (lines.length === 0) {
+      setDuplicateWarnings(['❌ Please enter student data!']);
+      return [];
+    }
+
+    const validEntries = [];
+    const warnings = [];
+    const seenRollNumbers = new Set();
+    const existingRolls = new Set(
+      Object.entries(students).map(([_, s]) => s.rollNumber)
+    );
+
+    lines.forEach((line, index) => {
+      const parts = line.split(',').map(p => p.trim());
+      
+      if (parts.length < 2 || !parts[0] || !parts[1]) {
+        warnings.push(`❌ Line ${index + 1}: Invalid format - "${line}"`);
+        return;
+      }
+
+      const name = parts[0];
+      const rollNumber = parts[1];
+
+      // Skip header row
+      if (name.toLowerCase().includes('name') && rollNumber.toLowerCase().includes('roll')) {
+        return;
+      }
+
+      // Check for duplicates in the input itself
+      if (seenRollNumbers.has(rollNumber)) {
+        warnings.push(`⚠️  Line ${index + 1}: Duplicate in your list - Roll ${rollNumber} appears multiple times`);
+        return;
+      }
+
+      // Check if roll number already exists in database
+      if (existingRolls.has(rollNumber)) {
+        warnings.push(`⚠️  Line ${index + 1}: Already in database - Roll ${rollNumber} (${name})`);
+        return;
+      }
+
+      seenRollNumbers.add(rollNumber);
+      validEntries.push({ name, rollNumber, lineNo: index + 1 });
+    });
+
+    setDuplicateWarnings(warnings);
+    return validEntries;
+  };
+
+  // Handle preview/validation
+  const handlePreviewData = () => {
+    validateBulkData();
+  };
+
+  // Bulk upload handler
+  const handleBulkUpload = async () => {
+    if (!user || !hasProfile) {
+      alert("Error: You must complete your CR registration first!");
+      router.push('/login');
+      return;
+    }
+
+    // Validate first
+    const validEntries = validateBulkData();
+    
+    if (validEntries.length === 0) {
+      setUploadStatus('✗ No valid entries to upload. Please fix the errors above.');
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadStatus('⏳ Uploading...');
+    let successCount = 0;
+
+    try {
+      for (const entry of validEntries) {
+        const newStudentRef = push(ref(db, `students/${user.uid}`));
+        await set(newStudentRef, { 
+          name: entry.name, 
+          rollNumber: entry.rollNumber 
+        });
+
+        setStudents(prev => ({ 
+          ...prev, 
+          [newStudentRef.key]: { name: entry.name, rollNumber: entry.rollNumber } 
+        }));
+        setAttendance(prev => ({ 
+          ...prev, 
+          [newStudentRef.key]: true 
+        }));
+        successCount++;
+      }
+
+      setUploadStatus(`✓ Successfully added ${successCount} student${successCount > 1 ? 's' : ''}!`);
+      setBulkInput('');
+      setDuplicateWarnings([]);
+      
+      setTimeout(() => {
+        setShowBulkUpload(false);
+        setUploadStatus('');
+      }, 2500);
+    } catch (error) {
+      setUploadStatus('✗ Error uploading students. Please try again.');
+      console.error(error);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // CSV file handler
+  const handleCSVUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result;
+      const lines = content.split('\n')
+        .map(line => line.trim())
+        .filter(line => line);
+      setBulkInput(lines.join('\n'));
+      setUploadStatus('✓ CSV loaded! Click "Preview Data" to check for duplicates.');
+      setTimeout(() => setUploadStatus(''), 3000);
+    };
+    reader.readAsText(file);
   };
 
   const handleEditClick = (id, student) => {
@@ -216,7 +382,7 @@ export default function Home() {
   const copyWhatsAppText = () => {
     if (!submittedAttendance) return;
     const presentRollsStr = submittedAttendance.present
-      .map(p => p.roll.slice(-3))
+      .map(p => p.roll)
       .join(', ');
     
     const text = `📋 *ATTENDANCE REPORT* 📋\n` +
@@ -230,6 +396,17 @@ export default function Home() {
     
     navigator.clipboard.writeText(text);
     alert("Attendance text copied to clipboard for WhatsApp!");
+  };
+
+  const downloadSampleCSV = () => {
+    const sampleData = "John Doe,0133CI251178\nJane Smith,0133CI251179\nMike Johnson,0133CI251180\nAli Khan,0133CI251181\nSarah Brown,0133CI251182";
+    const element = document.createElement('a');
+    element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(sampleData));
+    element.setAttribute('download', 'sample_students.csv');
+    element.style.display = 'none';
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
   };
 
   const sortedStudentsList = Object.entries(students).sort((a, b) => 
@@ -313,16 +490,23 @@ export default function Home() {
                 Editing Student Mode Active
               </>
             ) : (
-              "Add Student to Class List"
+              "Add Single Student"
             )}
           </h2>
-          {editingStudentId && (
+          <div className="flex gap-2">
+            {editingStudentId && (
+              <button 
+                onClick={handleCancelEdit} 
+                className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg transition-all border border-slate-700">
+                Cancel Edit
+              </button>
+            )}
             <button 
-              onClick={handleCancelEdit} 
-              className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg transition-all border border-slate-700">
-              Cancel Edit
+              onClick={() => setShowBulkUpload(!showBulkUpload)} 
+              className={`text-xs px-4 py-2 rounded-lg transition-all font-medium ${showBulkUpload ? 'bg-purple-700 text-white border border-purple-600' : 'bg-purple-600 hover:bg-purple-500 text-white border border-purple-500'}`}>
+              {showBulkUpload ? '✕ Hide Bulk' : '+ Bulk Upload'}
             </button>
-          )}
+          </div>
         </div>
         <form onSubmit={handleAddOrUpdateStudent} className="flex flex-col sm:flex-row gap-3">
           <input 
@@ -335,26 +519,192 @@ export default function Home() {
           />
           <input 
             type="text" 
-            placeholder="Unique Roll Number" 
+            placeholder="Roll Number" 
             value={studentRoll} 
             onChange={(e) => setStudentRoll(e.target.value)} 
             required 
             className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 sm:w-48 text-slate-100" 
           />
           <button type="submit" className={`px-6 py-3 rounded-xl text-sm font-semibold text-white transition-all shadow-lg ${editingStudentId ? 'bg-gradient-to-r from-amber-500 to-orange-600 shadow-orange-900/20 hover:opacity-90' : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-900/20 hover:opacity-90'}`}>
-            {editingStudentId ? "Update Student" : "Add Student"}
+            {editingStudentId ? "Update" : "Add"}
           </button>
         </form>
       </div>
 
-      {/* Student List Display with Edit & Delete Options */}
+      {/* Bulk Upload Section */}
+      {showBulkUpload && (
+        <div className="max-w-4xl mx-auto bg-gradient-to-br from-purple-950/40 to-slate-950 border-2 border-purple-500/50 rounded-2xl shadow-xl p-6 mb-6 animate-in fade-in duration-300">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-3 h-3 rounded-full bg-purple-400 animate-pulse"></div>
+            <h2 className="text-lg font-bold text-purple-300">
+              📥 Bulk Upload Students
+            </h2>
+          </div>
+          
+          {/* Roll Range Generator Section */}
+          <div className="bg-slate-950 border border-cyan-500/30 rounded-xl p-4 mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-bold text-cyan-400">⚡ Quick Generate Roll Numbers</p>
+              <button
+                type="button"
+                onClick={() => setShowGenerator(!showGenerator)}
+                className={`text-xs px-3 py-1 rounded-lg transition-all ${showGenerator ? 'bg-cyan-600 text-white' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50'}`}>
+                {showGenerator ? '▼ Hide' : '▶ Show'}
+              </button>
+            </div>
+
+            {showGenerator && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">Prefix</label>
+                    <input
+                      type="text"
+                      placeholder="0133CI25"
+                      value={rollPrefix}
+                      onChange={(e) => setRollPrefix(e.target.value.toUpperCase())}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">Start</label>
+                    <input
+                      type="text"
+                      placeholder="1178"
+                      value={rangeStart}
+                      onChange={(e) => setRangeStart(e.target.value.replace(/\D/g, ''))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">End</label>
+                    <input
+                      type="text"
+                      placeholder="1250"
+                      value={rangeEnd}
+                      onChange={(e) => setRangeEnd(e.target.value.replace(/\D/g, ''))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={generateRollRange}
+                      className="w-full bg-gradient-to-r from-cyan-600 to-cyan-700 hover:from-cyan-500 hover:to-cyan-600 text-white rounded-lg p-2.5 text-sm font-semibold transition-all">
+                      🚀 Generate
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400">
+                  📊 Preview: <span className="text-cyan-400 font-mono">{rollPrefix}{rangeStart}</span> → <span className="text-cyan-400 font-mono">{rollPrefix}{rangeEnd}</span> ({parseInt(rangeEnd) - parseInt(rangeStart) + 1} students)
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Data Input Section */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-4">
+            <p className="text-xs text-slate-300 mb-3 font-semibold">📝 Format: <code className="bg-slate-900 px-2 py-1 rounded text-yellow-400">Name, Roll Number</code></p>
+            <p className="text-xs text-slate-400 mb-3">Enter one student per line or generate them above and edit the names</p>
+            <textarea 
+              value={bulkInput} 
+              onChange={(e) => setBulkInput(e.target.value)} 
+              placeholder="Student 1178, 0133CI251178&#10;Student 1179, 0133CI251179&#10;Student 1180, 0133CI251180"
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-purple-500 text-slate-100 font-mono resize-none h-40 placeholder-slate-600"
+            />
+            <p className="text-xs text-slate-400 mt-2">
+              📊 {bulkInput.split('\n').filter(line => line.trim()).length} students in list
+            </p>
+          </div>
+
+          {/* Validation Warnings/Status */}
+          {duplicateWarnings.length > 0 && (
+            <div className="mb-4 p-4 bg-slate-900 border border-slate-800 rounded-xl max-h-48 overflow-y-auto">
+              <p className="text-xs font-bold text-slate-300 mb-2">⚠️  Validation Report:</p>
+              <div className="space-y-1">
+                {duplicateWarnings.map((warning, idx) => (
+                  <p key={idx} className={`text-xs ${
+                    warning.includes('❌') 
+                      ? 'text-rose-400' 
+                      : 'text-amber-400'
+                  }`}>
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Buttons */}
+          <div className="flex flex-col gap-3 mb-4">
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={handlePreviewData}
+                type="button"
+                className="bg-cyan-600 hover:bg-cyan-500 text-white py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-cyan-900/30">
+                🔍 Preview Data
+              </button>
+              <button 
+                onClick={handleBulkUpload}
+                disabled={isUploading || bulkInput.trim().length === 0}
+                type="button"
+                className="w-full bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 disabled:from-slate-700 disabled:to-slate-700 disabled:opacity-50 text-white py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-purple-900/30 flex items-center justify-center gap-2">
+                {isUploading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    🚀 Upload All
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 py-2.5 rounded-xl font-semibold transition-all cursor-pointer border border-slate-700 text-center text-sm">
+                📄 Upload CSV
+                <input 
+                  ref={fileInputRef}
+                  type="file" 
+                  accept=".csv,.txt" 
+                  onChange={handleCSVUpload}
+                  className="hidden"
+                />
+              </label>
+              <button 
+                onClick={downloadSampleCSV}
+                type="button"
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 py-2.5 rounded-xl font-semibold transition-all border border-slate-700 text-sm">
+                📋 Sample CSV
+              </button>
+            </div>
+          </div>
+
+          {/* Status Message */}
+          {uploadStatus && (
+            <div className={`p-3 rounded-lg text-sm font-semibold border transition-all ${
+              uploadStatus.includes('✓') 
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' 
+                : uploadStatus.includes('⏳')
+                ? 'bg-blue-500/20 text-blue-300 border-blue-500/50'
+                : 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+            }`}>
+              {uploadStatus}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Student List Display */}
       {sortedStudentsList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
-          <h2 className="text-lg font-semibold mb-4 text-slate-200">Enrolled Students ({sortedStudentsList.length})</h2>
-          <div className="overflow-x-auto max-h-72 overflow-y-auto border border-slate-800 rounded-xl">
+          <h2 className="text-lg font-semibold mb-4 text-slate-200">📚 Enrolled Students ({sortedStudentsList.length})</h2>
+          <div className="overflow-x-auto max-h-80 overflow-y-auto border border-slate-800 rounded-xl">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs">
+                <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs sticky top-0">
                   <th className="p-3">Roll Number</th>
                   <th className="p-3">Student Name</th>
                   <th className="p-3 text-right">Actions</th>
@@ -391,18 +741,18 @@ export default function Home() {
       {sortedStudentsList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
-            <h2 className="text-lg font-semibold text-slate-200">Mark Attendance</h2>
+            <h2 className="text-lg font-semibold text-slate-200">✓ Mark Attendance</h2>
             <input 
               type="date" 
               value={markedDate} 
               min={todayStr}
               max={todayStr}
               onChange={(e) => setMarkedDate(e.target.value)} 
-              className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-200 cursor-not-allowed" 
+              className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-200" 
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto mb-4 border border-slate-800/80 p-4 rounded-xl bg-slate-950/50">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto mb-4 border border-slate-800/80 p-4 rounded-xl bg-slate-950/50">
             {sortedStudentsList.map(([id, s]) => (
               <label key={id} className="flex items-center justify-between bg-slate-900/80 border border-slate-800 p-3 rounded-xl cursor-pointer hover:border-cyan-500/50 transition-all">
                 <span className="text-sm font-medium text-slate-300">{s.rollNumber} - {s.name}</span>
@@ -417,7 +767,7 @@ export default function Home() {
           </div>
 
           <button onClick={submitAttendance} className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 transition-all shadow-lg shadow-cyan-900/20">
-            Save Attendance
+            💾 Save Attendance
           </button>
         </div>
       )}
@@ -425,20 +775,20 @@ export default function Home() {
       {/* Export Actions */}
       {submittedAttendance && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-cyan-500/30 rounded-2xl shadow-xl p-6 text-center mb-6">
-          <h3 className="text-lg font-bold text-cyan-400 mb-2">Attendance Recorded Successfully!</h3>
+          <h3 className="text-lg font-bold text-cyan-400 mb-2">✅ Attendance Recorded Successfully!</h3>
           <p className="text-xs text-slate-400 mb-4">Saved securely and set to expire automatically in 48 hours.</p>
           <div className="flex flex-col sm:flex-row justify-center gap-4">
             <button onClick={downloadJPG} className="bg-indigo-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-900/20">
-              Download JPG Image
+              📸 Download JPG
             </button>
             <button onClick={copyWhatsAppText} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-900/20">
-              Copy WhatsApp Text
+              💬 Copy WhatsApp Text
             </button>
           </div>
         </div>
       )}
 
-      {/* Hidden Card Template for html2canvas JPG Export */}
+      {/* Hidden Card Template for JPG Export */}
       <div style={{ position: 'absolute', left: '-9999px' }}>
         <div ref={exportRef} style={{ width: '600px', padding: '30px', background: 'white', color: 'black', fontFamily: 'Arial, sans-serif' }}>
           <h2 style={{ textAlign: 'center', color: '#1e3a8a', margin: '0 0 10px 0' }}>{crData?.collegeName}</h2>
@@ -451,7 +801,7 @@ export default function Home() {
           <p><strong>Total Present:</strong> {submittedAttendance?.present.length} / {Object.keys(students).length}</p>
           
           <div style={{ marginTop: '20px', background: '#f3f4f6', padding: '15px', borderRadius: '8px' }}>
-            <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>Present Students (Serial & Roll Number):</p>
+            <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>Present Students:</p>
             <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '14px' }}>
               {submittedAttendance?.present.map((p, idx) => (
                 <li key={idx} style={{ marginBottom: '4px' }}>
