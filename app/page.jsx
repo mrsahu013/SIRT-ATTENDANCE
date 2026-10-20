@@ -334,6 +334,20 @@ export default function Home() {
     setAttendance(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
+  // Check if all students are marked present
+  const allStudentsMarked = Object.keys(students).length > 0 && 
+    Object.keys(students).every(id => !!attendance[id]);
+
+  // Toggle Mark All / Unmark All
+  const handleToggleAllAttendance = () => {
+    const targetState = !allStudentsMarked;
+    const updatedAtt = {};
+    Object.keys(students).forEach(id => {
+      updatedAtt[id] = targetState;
+    });
+    setAttendance(updatedAtt);
+  };
+
   const submitAttendance = async () => {
     if (!user || !hasProfile) {
       alert("Error: You must complete your CR registration first!");
@@ -412,6 +426,9 @@ export default function Home() {
   const sortedStudentsList = Object.entries(students).sort((a, b) => 
     a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true })
   );
+
+  const presentCount = Object.values(attendance).filter(Boolean).length;
+  const totalCount = Object.keys(students).length;
 
   if (loadingAuth) {
     return (
@@ -741,7 +758,24 @@ export default function Home() {
       {sortedStudentsList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
-            <h2 className="text-lg font-semibold text-slate-200">✓ Mark Attendance</h2>
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-lg font-semibold text-slate-200">✓ Mark Attendance</h2>
+              {/* Single Toggle Button for Mark All / Unmark All */}
+              <button 
+                type="button"
+                onClick={handleToggleAllAttendance}
+                className={`text-xs px-3.5 py-1.5 rounded-lg font-bold border transition-all shadow-md ${
+                  allStudentsMarked
+                    ? 'bg-rose-500/10 border-rose-500/40 text-rose-400 hover:bg-rose-500 hover:text-white shadow-rose-950/20'
+                    : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500 hover:text-white shadow-emerald-950/20'
+                }`}>
+                {allStudentsMarked ? '✕ Unmark All' : '✓ Mark All'}
+              </button>
+              <span className="text-xs text-slate-400 font-mono">
+                ({presentCount}/{totalCount} Present)
+              </span>
+            </div>
+            
             <input 
               type="date" 
               value={markedDate} 
@@ -754,8 +788,16 @@ export default function Home() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto mb-4 border border-slate-800/80 p-4 rounded-xl bg-slate-950/50">
             {sortedStudentsList.map(([id, s]) => (
-              <label key={id} className="flex items-center justify-between bg-slate-900/80 border border-slate-800 p-3 rounded-xl cursor-pointer hover:border-cyan-500/50 transition-all">
-                <span className="text-sm font-medium text-slate-300">{s.rollNumber} - {s.name}</span>
+              <label 
+                key={id} 
+                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border ${
+                  attendance[id] 
+                    ? 'bg-slate-900/90 border-cyan-500/40 hover:border-cyan-500' 
+                    : 'bg-slate-950/80 border-slate-800 hover:border-slate-700 opacity-60'
+                }`}>
+                <span className={`text-sm font-medium ${attendance[id] ? 'text-slate-100 font-semibold' : 'text-slate-400 line-through'}`}>
+                  {s.rollNumber} - {s.name}
+                </span>
                 <input 
                   type="checkbox" 
                   checked={attendance[id] ?? true} 
