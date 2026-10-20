@@ -382,7 +382,7 @@ export default function Home() {
   const copyWhatsAppText = () => {
     if (!submittedAttendance) return;
     const presentRollsStr = submittedAttendance.present
-      .map(p => p.roll)
+      .map(p => p.roll.slice(-3))
       .join(', ');
     
     const text = `📋 *ATTENDANCE REPORT* 📋\n` +
