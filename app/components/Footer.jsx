@@ -47,14 +47,10 @@ export default function Footer() {
               <span className="text-slate-600"> by the Team</span>
             </p>
             <p className="text-xs text-slate-600 mt-2">
-              Version 1.0.0 | Last Updated: {new Date().toLocaleDateString()}
+              Version 1.0.0 | Last Updated: 28 October 2026
             </p>
           </div>
         </div>
-      </div>
-      {/* Floating Badge */}
-      <div className="fixed bottom-6 right-6 bg-cyan-500/10 border border-cyan-500/30 rounded-full px-4 py-2 text-xs text-cyan-400 font-semibold backdrop-blur-sm">
-        🚀 v1.0.0
       </div>
     </footer>
   );

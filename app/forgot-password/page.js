@@ -23,8 +23,7 @@ export default function ForgotPassword() {
       // Firebase Auth secure password reset request
       await sendPasswordResetEmail(auth, email.trim());
 
-      // Security Best Practice: Hamesha common message dikhayein
-      // taaki attacker ko pata na chale ki email database mein hai ya nahi.
+      // Show the same message either way so we don't reveal which emails are registered
       setMessage(
         "If an account exists with this email, a password reset link has been sent. Please check your Inbox and Spam folder.",
       );
