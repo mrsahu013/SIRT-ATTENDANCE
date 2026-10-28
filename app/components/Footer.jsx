@@ -1,6 +1,6 @@
 // app/components/Footer.jsx
-'use client';
-import Link from 'next/link';
+"use client";
+import Link from "next/link";
 
 export default function Footer() {
   const currentYear = new Date().getFullYear();
@@ -10,7 +10,6 @@ export default function Footer() {
       {/* Main Footer Content */}
       <div className="max-w-7xl mx-auto px-6 md:px-10 py-12 md:py-16">
         <div className="flex justify-between items-start mb-12">
-          
           {/* Brand Section */}
           <div>
             <div className="mb-4">
@@ -19,17 +18,31 @@ export default function Footer() {
               </h3>
             </div>
             <p className="text-sm text-slate-400 leading-relaxed max-w-md">
-              A modern attendance management system for Class Representatives to efficiently track and manage student attendance records.
+              A modern attendance management system for Class Representatives to
+              efficiently track and manage student attendance records.
             </p>
           </div>
 
           {/* Company Links - Right Side */}
           <div>
-            <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider mb-4">MOJIHIKE</h4>
+            <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider mb-4">
+              MOJIHIKE
+            </h4>
             <ul>
               <li>
-                <Link href="https://www.mojihike.online/contact" className="text-sm text-slate-400 hover:text-cyan-400 transition-colors">
+                <Link
+                  href="https://www.mojihike.online/contact"
+                  className="text-sm text-slate-400 hover:text-cyan-400 transition-colors"
+                >
                   Contact
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/privacy"
+                  className="text-sm text-slate-400 hover:text-cyan-400 transition-colors"
+                >
+                  Privacy Policy
                 </Link>
               </li>
             </ul>
@@ -41,8 +54,9 @@ export default function Footer() {
           {/* Copyright */}
           <div className="text-center pt-6 border-t border-slate-800/50">
             <p className="text-xs text-slate-500">
-              &copy; {currentYear} <span className="text-cyan-400">Mark Student</span>. All rights reserved. | 
-              <span className="text-slate-600"> Made with </span>
+              &copy; {currentYear}{" "}
+              <span className="text-cyan-400">Mark Student</span>. All rights
+              reserved. |<span className="text-slate-600"> Made with </span>
               <span className="text-rose-400">❤️</span>
               <span className="text-slate-600"> by the Team</span>
             </p>
