@@ -15,10 +15,16 @@ export default function Home() {
   const [students, setStudents] = useState({});
   const [studentName, setStudentName] = useState('');
   const [studentRoll, setStudentRoll] = useState('');
-  
+
+  // Edit profile (TG name / Year) state
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileTg, setProfileTg] = useState('');
+  const [profileYear, setProfileYear] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+
   // Edit student state
   const [editingStudentId, setEditingStudentId] = useState(null);
-  
+
   // Bulk upload state
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
@@ -26,13 +32,13 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [duplicateWarnings, setDuplicateWarnings] = useState([]);
   const fileInputRef = useRef(null);
-  
+
   // Roll range generator state
   const [rollPrefix, setRollPrefix] = useState('0133CI25');
   const [rangeStart, setRangeStart] = useState('1178');
   const [rangeEnd, setRangeEnd] = useState('1250');
   const [showGenerator, setShowGenerator] = useState(false);
-  
+
   const todayStr = new Date().toISOString().split('T')[0];
   const MASTER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_MASTER_ADMIN_EMAIL;
 
@@ -40,7 +46,7 @@ export default function Home() {
   const [attendance, setAttendance] = useState({});
   const [markedDate, setMarkedDate] = useState(todayStr);
   const [submittedAttendance, setSubmittedAttendance] = useState(null);
-  const exportRef = useRef(null);
+  const exportFullRef = useRef(null); // present + absent JPG
   const router = useRouter();
 
   useEffect(() => {
@@ -53,10 +59,10 @@ export default function Home() {
       } else {
         setUser(currentUser);
         const dbRef = ref(db);
-        
+
         // Fetch CR Profile from database
         const crSnap = await get(child(dbRef, `users/${currentUser.uid}`));
-        
+
         // Check if profile exists and has tgName
         if (!crSnap.exists() || !crSnap.val().tgName) {
           setHasProfile(false);
@@ -77,7 +83,7 @@ export default function Home() {
           const fetchedStudents = studentsSnap.val();
           setStudents(fetchedStudents);
           const initialAtt = {};
-          Object.keys(fetchedStudents).forEach(id => {
+          Object.keys(fetchedStudents).forEach((id) => {
             initialAtt[id] = true;
           });
           setAttendance(initialAtt);
@@ -101,10 +107,48 @@ export default function Home() {
     return () => unsubscribe();
   }, [router]);
 
+  const startEditProfile = () => {
+    setProfileTg(crData?.tgName || '');
+    setProfileYear(crData?.year || '');
+    setEditingProfile(true);
+  };
+
+  const cancelEditProfile = () => {
+    setEditingProfile(false);
+    setProfileTg('');
+    setProfileYear('');
+  };
+
+  const saveProfile = async (e) => {
+    e.preventDefault();
+    if (!user || !hasProfile) return;
+
+    const tgName = profileTg.trim();
+    const year = profileYear.trim();
+
+    if (!tgName || !year) {
+      alert('TG Name and Year cannot be empty!');
+      return;
+    }
+
+    setProfileSaving(true);
+    try {
+      await update(ref(db, `users/${user.uid}`), { tgName, year });
+      setCrData((prev) => ({ ...prev, tgName, year }));
+      setEditingProfile(false);
+      alert('Profile updated successfully!');
+    } catch (error) {
+      console.error(error);
+      alert('Error updating profile. Please try again.');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
   const handleAddOrUpdateStudent = async (e) => {
     e.preventDefault();
     if (!user || !hasProfile) {
-      alert("Error: You must complete your CR registration first!");
+      alert('Error: You must complete your CR registration first!');
       router.push('/login');
       return;
     }
@@ -113,7 +157,7 @@ export default function Home() {
       ([id, s]) => s.rollNumber === studentRoll && id !== editingStudentId
     );
     if (duplicateEntry) {
-      alert("Error: This Roll Number already exists in your list!");
+      alert('Error: This Roll Number already exists in your list!');
       return;
     }
 
@@ -121,18 +165,21 @@ export default function Home() {
       const studentRef = ref(db, `students/${user.uid}/${editingStudentId}`);
       await update(studentRef, { name: studentName, rollNumber: studentRoll });
 
-      setStudents(prev => ({
+      setStudents((prev) => ({
         ...prev,
-        [editingStudentId]: { name: studentName, rollNumber: studentRoll }
+        [editingStudentId]: { name: studentName, rollNumber: studentRoll },
       }));
-      
+
       setEditingStudentId(null);
     } else {
       const newStudentRef = push(ref(db, `students/${user.uid}`));
       await set(newStudentRef, { name: studentName, rollNumber: studentRoll });
 
-      setStudents(prev => ({ ...prev, [newStudentRef.key]: { name: studentName, rollNumber: studentRoll } }));
-      setAttendance(prev => ({ ...prev, [newStudentRef.key]: true }));
+      setStudents((prev) => ({
+        ...prev,
+        [newStudentRef.key]: { name: studentName, rollNumber: studentRoll },
+      }));
+      setAttendance((prev) => ({ ...prev, [newStudentRef.key]: true }));
     }
 
     setStudentName('');
@@ -168,8 +215,8 @@ export default function Home() {
 
   // Validate and preview bulk data BEFORE uploading
   const validateBulkData = () => {
-    const lines = bulkInput.trim().split('\n').filter(line => line.trim());
-    
+    const lines = bulkInput.trim().split('\n').filter((line) => line.trim());
+
     if (lines.length === 0) {
       setDuplicateWarnings(['❌ Please enter student data!']);
       return [];
@@ -183,8 +230,8 @@ export default function Home() {
     );
 
     lines.forEach((line, index) => {
-      const parts = line.split(',').map(p => p.trim());
-      
+      const parts = line.split(',').map((p) => p.trim());
+
       if (parts.length < 2 || !parts[0] || !parts[1]) {
         warnings.push(`❌ Line ${index + 1}: Invalid format - "${line}"`);
         return;
@@ -226,14 +273,14 @@ export default function Home() {
   // Bulk upload handler
   const handleBulkUpload = async () => {
     if (!user || !hasProfile) {
-      alert("Error: You must complete your CR registration first!");
+      alert('Error: You must complete your CR registration first!');
       router.push('/login');
       return;
     }
 
     // Validate first
     const validEntries = validateBulkData();
-    
+
     if (validEntries.length === 0) {
       setUploadStatus('✗ No valid entries to upload. Please fix the errors above.');
       return;
@@ -246,18 +293,18 @@ export default function Home() {
     try {
       for (const entry of validEntries) {
         const newStudentRef = push(ref(db, `students/${user.uid}`));
-        await set(newStudentRef, { 
-          name: entry.name, 
-          rollNumber: entry.rollNumber 
+        await set(newStudentRef, {
+          name: entry.name,
+          rollNumber: entry.rollNumber,
         });
 
-        setStudents(prev => ({ 
-          ...prev, 
-          [newStudentRef.key]: { name: entry.name, rollNumber: entry.rollNumber } 
+        setStudents((prev) => ({
+          ...prev,
+          [newStudentRef.key]: { name: entry.name, rollNumber: entry.rollNumber },
         }));
-        setAttendance(prev => ({ 
-          ...prev, 
-          [newStudentRef.key]: true 
+        setAttendance((prev) => ({
+          ...prev,
+          [newStudentRef.key]: true,
         }));
         successCount++;
       }
@@ -265,7 +312,7 @@ export default function Home() {
       setUploadStatus(`✓ Successfully added ${successCount} student${successCount > 1 ? 's' : ''}!`);
       setBulkInput('');
       setDuplicateWarnings([]);
-      
+
       setTimeout(() => {
         setShowBulkUpload(false);
         setUploadStatus('');
@@ -286,9 +333,10 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result;
-      const lines = content.split('\n')
-        .map(line => line.trim())
-        .filter(line => line);
+      const lines = content
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line);
       setBulkInput(lines.join('\n'));
       setUploadStatus('✓ CSV loaded! Click "Preview Data" to check for duplicates.');
       setTimeout(() => setUploadStatus(''), 3000);
@@ -310,39 +358,40 @@ export default function Home() {
   };
 
   const handleDeleteStudent = async (id) => {
-    if (!confirm("Are you sure you want to remove this student from your list?")) return;
-    
+    if (!confirm('Are you sure you want to remove this student from your list?')) return;
+
     await remove(ref(db, `students/${user.uid}/${id}`));
-    setStudents(prev => {
+    setStudents((prev) => {
       const updated = { ...prev };
       delete updated[id];
       return updated;
     });
 
-    setAttendance(prev => {
+    setAttendance((prev) => {
       const updated = { ...prev };
       delete updated[id];
       return updated;
     });
-    
+
     if (editingStudentId === id) {
       handleCancelEdit();
     }
   };
 
   const handleAttendanceChange = (id) => {
-    setAttendance(prev => ({ ...prev, [id]: !prev[id] }));
+    setAttendance((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   // Check if all students are marked present
-  const allStudentsMarked = Object.keys(students).length > 0 && 
-    Object.keys(students).every(id => !!attendance[id]);
+  const allStudentsMarked =
+    Object.keys(students).length > 0 &&
+    Object.keys(students).every((id) => !!attendance[id]);
 
   // Toggle Mark All / Unmark All
   const handleToggleAllAttendance = () => {
     const targetState = !allStudentsMarked;
     const updatedAtt = {};
-    Object.keys(students).forEach(id => {
+    Object.keys(students).forEach((id) => {
       updatedAtt[id] = targetState;
     });
     setAttendance(updatedAtt);
@@ -350,7 +399,7 @@ export default function Home() {
 
   const submitAttendance = async () => {
     if (!user || !hasProfile) {
-      alert("Error: You must complete your CR registration first!");
+      alert('Error: You must complete your CR registration first!');
       router.push('/login');
       return;
     }
@@ -358,7 +407,7 @@ export default function Home() {
     const presentList = [];
     const absentList = [];
 
-    const sortedStudentEntries = Object.entries(students).sort((a, b) => 
+    const sortedStudentEntries = Object.entries(students).sort((a, b) =>
       a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true })
     );
 
@@ -374,46 +423,52 @@ export default function Home() {
       date: markedDate,
       timestamp: Date.now(),
       present: presentList,
-      absent: absentList
+      absent: absentList,
     };
 
     await set(ref(db, `attendance/${user.uid}/${markedDate}`), attendanceRecord);
     setSubmittedAttendance(attendanceRecord);
-    alert("Attendance Saved Successfully! Valid for 2 days.");
+    alert('Attendance Saved Successfully! Valid for 2 days.');
   };
 
-  const downloadJPG = async () => {
-    if (!exportRef.current) return;
-    const canvas = await html2canvas(exportRef.current, { scale: 2 });
-    const image = canvas.toDataURL("image/jpeg", 1.0);
+  // Download: present (green) + absent (red) students
+  const downloadFullJPG = async () => {
+    if (!exportFullRef.current) return;
+    const canvas = await html2canvas(exportFullRef.current, {
+      scale: 2,
+      backgroundColor: '#ffffff',
+    });
+    const image = canvas.toDataURL('image/jpeg', 1.0);
     const link = document.createElement('a');
     link.href = image;
     const crRoll = crData?.crRollNumber || 'CR';
-    link.download = `Attendance_${crRoll}_${markedDate}.jpg`;
+    link.download = `Attendance_Full_${crRoll}_${markedDate}.jpg`;
     link.click();
   };
 
   const copyWhatsAppText = () => {
     if (!submittedAttendance) return;
     const presentRollsStr = submittedAttendance.present
-      .map(p => p.roll.slice(-3))
+      .map((p) => p.roll.slice(-3))
       .join(', ');
-    
-    const text = `📋 *ATTENDANCE REPORT* 📋\n` +
-                 `🏫 *College:* ${crData?.collegeName}\n` +
-                 `📚 *Class:* ${crData?.branch} - Sec ${crData?.section} (${crData?.year})\n` +
-                 `📅 *Date:* ${submittedAttendance.date}\n` +
-                 `👨‍🏫 *TG:* ${crData?.tgName}\n\n` +
-                 `Total Present: ${submittedAttendance.present.length} / ${Object.keys(students).length}\n\n` +
-                 `*Present Roll Nos*\n` +
-                 `${presentRollsStr}`;
-    
+
+    const text =
+      `📋 *ATTENDANCE REPORT* 📋\n` +
+      `🏫 *College:* ${crData?.collegeName}\n` +
+      `📚 *Class:* ${crData?.branch} - Sec ${crData?.section} (${crData?.year})\n` +
+      `📅 *Date:* ${submittedAttendance.date}\n` +
+      `👨‍🏫 *TG:* ${crData?.tgName}\n\n` +
+      `Total Present: ${submittedAttendance.present.length} / ${Object.keys(students).length}\n\n` +
+      `*Present Roll Nos*\n` +
+      `${presentRollsStr}`;
+
     navigator.clipboard.writeText(text);
-    alert("Attendance text copied to clipboard for WhatsApp!");
+    alert('Attendance text copied to clipboard for WhatsApp!');
   };
 
   const downloadSampleCSV = () => {
-    const sampleData = "John Doe,0133CI251178\nJane Smith,0133CI251179\nMike Johnson,0133CI251180\nAli Khan,0133CI251181\nSarah Brown,0133CI251182";
+    const sampleData =
+      'John Doe,0133CI251178\nJane Smith,0133CI251179\nMike Johnson,0133CI251180\nAli Khan,0133CI251181\nSarah Brown,0133CI251182';
     const element = document.createElement('a');
     element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(sampleData));
     element.setAttribute('download', 'sample_students.csv');
@@ -423,7 +478,7 @@ export default function Home() {
     document.body.removeChild(element);
   };
 
-  const sortedStudentsList = Object.entries(students).sort((a, b) => 
+  const sortedStudentsList = Object.entries(students).sort((a, b) =>
     a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true })
   );
 
@@ -450,13 +505,13 @@ export default function Home() {
           </h1>
           <p className="text-slate-400 text-sm mb-6">Manage your class attendance and records efficiently.</p>
           <div className="flex flex-col gap-3">
-            <a 
-              href="/login" 
+            <a
+              href="/login"
               className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white p-3.5 rounded-xl font-semibold hover:opacity-90 transition-all shadow-lg shadow-cyan-900/20 block">
               Login to Dashboard
             </a>
-            <a 
-              href="/register" 
+            <a
+              href="/register"
               className="w-full bg-slate-800 border border-slate-700 text-slate-200 p-3.5 rounded-xl font-semibold hover:bg-slate-700 transition-all block">
               Register as CR
             </a>
@@ -476,26 +531,79 @@ export default function Home() {
           </h1>
           {crData && (
             <p className="text-slate-400 text-sm mt-1">
-              <span className="text-slate-200 font-medium">{crData.crName}</span> (Roll: {crData.crRollNumber}) | {crData.collegeName} | {crData.branch} Sec {crData.section}
+              <span className="text-slate-200 font-medium">{crData.crName}</span> (Roll: {crData.crRollNumber}) | {crData.collegeName} | {crData.branch} Sec {crData.section} | Year: {crData.year} | TG: {crData.tgName}
             </p>
           )}
         </div>
-        
+
         <div className="flex items-center gap-3">
+          <button
+            onClick={editingProfile ? cancelEditProfile : startEditProfile}
+            className="bg-amber-500/10 border border-amber-500/30 text-amber-400 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-amber-500 hover:text-slate-950 transition-all">
+            {editingProfile ? '✕ Close' : '✏️ Edit'}
+          </button>
           {user?.email === MASTER_ADMIN_EMAIL && (
-            <button 
-              onClick={() => router.push('/admin')} 
+            <button
+              onClick={() => router.push('/admin')}
               className="bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-cyan-500 hover:text-slate-950 transition-all shadow-lg shadow-cyan-900/10">
               Admin Panel
             </button>
           )}
-          <button 
-            onClick={() => signOut(auth).then(() => { setUser(null); setHasProfile(false); router.push('/login'); })} 
+          <button
+            onClick={() => signOut(auth).then(() => { setUser(null); setHasProfile(false); router.push('/login'); })}
             className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-rose-500 hover:text-white transition-all">
             Logout
           </button>
         </div>
       </div>
+
+      {/* Edit Profile (TG Name / Year) */}
+      {editingProfile && (
+        <div className="max-w-4xl mx-auto bg-slate-900 border border-amber-500/50 shadow-amber-500/10 rounded-2xl shadow-xl p-6 mb-6">
+          <h2 className="text-lg font-semibold text-amber-400 flex items-center gap-2 mb-4">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+            Edit
+          </h2>
+          <form onSubmit={saveProfile} className="flex flex-col sm:flex-row gap-3">
+            <div className="flex-1">
+              <label className="text-xs text-slate-400 block mb-1">TG Name</label>
+              <input
+                type="text"
+                placeholder="TG Name"
+                value={profileTg}
+                onChange={(e) => setProfileTg(e.target.value)}
+                required
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-amber-500 text-slate-100"
+              />
+            </div>
+            <div className="sm:w-48">
+              <label className="text-xs text-slate-400 block mb-1">Year</label>
+              <input
+                type="text"
+                placeholder="Year"
+                value={profileYear}
+                onChange={(e) => setProfileYear(e.target.value)}
+                required
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-amber-500 text-slate-100"
+              />
+            </div>
+            <div className="flex items-end gap-2">
+              <button
+                type="submit"
+                disabled={profileSaving}
+                className="px-6 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-amber-500 to-orange-600 hover:opacity-90 disabled:opacity-50 transition-all shadow-lg shadow-orange-900/20">
+                {profileSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={cancelEditProfile}
+                className="px-4 py-3 rounded-xl text-sm bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Add / Edit Student Section */}
       <div className={`max-w-4xl mx-auto bg-slate-900 border rounded-2xl shadow-xl p-6 mb-6 transition-all ${editingStudentId ? 'border-amber-500/50 shadow-amber-500/10' : 'border-slate-800'}`}>
@@ -507,43 +615,43 @@ export default function Home() {
                 Editing Student Mode Active
               </>
             ) : (
-              "Add Single Student"
+              'Add Single Student'
             )}
           </h2>
           <div className="flex gap-2">
             {editingStudentId && (
-              <button 
-                onClick={handleCancelEdit} 
+              <button
+                onClick={handleCancelEdit}
                 className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg transition-all border border-slate-700">
                 Cancel Edit
               </button>
             )}
-            <button 
-              onClick={() => setShowBulkUpload(!showBulkUpload)} 
+            <button
+              onClick={() => setShowBulkUpload(!showBulkUpload)}
               className={`text-xs px-4 py-2 rounded-lg transition-all font-medium ${showBulkUpload ? 'bg-purple-700 text-white border border-purple-600' : 'bg-purple-600 hover:bg-purple-500 text-white border border-purple-500'}`}>
               {showBulkUpload ? '✕ Hide Bulk' : '+ Bulk Upload'}
             </button>
           </div>
         </div>
         <form onSubmit={handleAddOrUpdateStudent} className="flex flex-col sm:flex-row gap-3">
-          <input 
-            type="text" 
-            placeholder="Student Name" 
-            value={studentName} 
-            onChange={(e) => setStudentName(e.target.value)} 
-            required 
-            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 flex-1 text-slate-100" 
+          <input
+            type="text"
+            placeholder="Student Name"
+            value={studentName}
+            onChange={(e) => setStudentName(e.target.value)}
+            required
+            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 flex-1 text-slate-100"
           />
-          <input 
-            type="text" 
-            placeholder="Roll Number" 
-            value={studentRoll} 
-            onChange={(e) => setStudentRoll(e.target.value)} 
-            required 
-            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 sm:w-48 text-slate-100" 
+          <input
+            type="text"
+            placeholder="Roll Number"
+            value={studentRoll}
+            onChange={(e) => setStudentRoll(e.target.value)}
+            required
+            className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 sm:w-48 text-slate-100"
           />
           <button type="submit" className={`px-6 py-3 rounded-xl text-sm font-semibold text-white transition-all shadow-lg ${editingStudentId ? 'bg-gradient-to-r from-amber-500 to-orange-600 shadow-orange-900/20 hover:opacity-90' : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-900/20 hover:opacity-90'}`}>
-            {editingStudentId ? "Update" : "Add"}
+            {editingStudentId ? 'Update' : 'Add'}
           </button>
         </form>
       </div>
@@ -557,7 +665,7 @@ export default function Home() {
               📥 Bulk Upload Students
             </h2>
           </div>
-          
+
           {/* Roll Range Generator Section */}
           <div className="bg-slate-950 border border-cyan-500/30 rounded-xl p-4 mb-4">
             <div className="flex items-center justify-between mb-3">
@@ -623,14 +731,14 @@ export default function Home() {
           <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-4">
             <p className="text-xs text-slate-300 mb-3 font-semibold">📝 Format: <code className="bg-slate-900 px-2 py-1 rounded text-yellow-400">Name, Roll Number</code></p>
             <p className="text-xs text-slate-400 mb-3">Enter one student per line or generate them above and edit the names</p>
-            <textarea 
-              value={bulkInput} 
-              onChange={(e) => setBulkInput(e.target.value)} 
+            <textarea
+              value={bulkInput}
+              onChange={(e) => setBulkInput(e.target.value)}
               placeholder="Student 1178, 0133CI251178&#10;Student 1179, 0133CI251179&#10;Student 1180, 0133CI251180"
               className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-purple-500 text-slate-100 font-mono resize-none h-40 placeholder-slate-600"
             />
             <p className="text-xs text-slate-400 mt-2">
-              📊 {bulkInput.split('\n').filter(line => line.trim()).length} students in list
+              📊 {bulkInput.split('\n').filter((line) => line.trim()).length} students in list
             </p>
           </div>
 
@@ -641,8 +749,8 @@ export default function Home() {
               <div className="space-y-1">
                 {duplicateWarnings.map((warning, idx) => (
                   <p key={idx} className={`text-xs ${
-                    warning.includes('❌') 
-                      ? 'text-rose-400' 
+                    warning.includes('❌')
+                      ? 'text-rose-400'
                       : 'text-amber-400'
                   }`}>
                     {warning}
@@ -655,13 +763,13 @@ export default function Home() {
           {/* Buttons */}
           <div className="flex flex-col gap-3 mb-4">
             <div className="grid grid-cols-2 gap-3">
-              <button 
+              <button
                 onClick={handlePreviewData}
                 type="button"
                 className="bg-cyan-600 hover:bg-cyan-500 text-white py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-cyan-900/30">
                 🔍 Preview Data
               </button>
-              <button 
+              <button
                 onClick={handleBulkUpload}
                 disabled={isUploading || bulkInput.trim().length === 0}
                 type="button"
@@ -682,15 +790,15 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-3">
               <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 py-2.5 rounded-xl font-semibold transition-all cursor-pointer border border-slate-700 text-center text-sm">
                 📄 Upload CSV
-                <input 
+                <input
                   ref={fileInputRef}
-                  type="file" 
-                  accept=".csv,.txt" 
+                  type="file"
+                  accept=".csv,.txt"
                   onChange={handleCSVUpload}
                   className="hidden"
                 />
               </label>
-              <button 
+              <button
                 onClick={downloadSampleCSV}
                 type="button"
                 className="bg-slate-800 hover:bg-slate-700 text-slate-200 py-2.5 rounded-xl font-semibold transition-all border border-slate-700 text-sm">
@@ -702,8 +810,8 @@ export default function Home() {
           {/* Status Message */}
           {uploadStatus && (
             <div className={`p-3 rounded-lg text-sm font-semibold border transition-all ${
-              uploadStatus.includes('✓') 
-                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' 
+              uploadStatus.includes('✓')
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
                 : uploadStatus.includes('⏳')
                 ? 'bg-blue-500/20 text-blue-300 border-blue-500/50'
                 : 'bg-rose-500/20 text-rose-300 border-rose-500/50'
@@ -733,13 +841,13 @@ export default function Home() {
                     <td className="p-3 font-semibold text-cyan-400">{s.rollNumber}</td>
                     <td className="p-3 text-slate-300">{s.name}</td>
                     <td className="p-3 text-right space-x-2">
-                      <button 
+                      <button
                         type="button"
                         onClick={() => handleEditClick(id, s)}
                         className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-cyan-500 hover:text-slate-950 transition-all cursor-pointer">
                         Edit
                       </button>
-                      <button 
+                      <button
                         type="button"
                         onClick={() => handleDeleteStudent(id)}
                         className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-rose-500 hover:text-white transition-all cursor-pointer">
@@ -761,7 +869,7 @@ export default function Home() {
             <div className="flex flex-wrap items-center gap-3">
               <h2 className="text-lg font-semibold text-slate-200">✓ Mark Attendance</h2>
               {/* Single Toggle Button for Mark All / Unmark All */}
-              <button 
+              <button
                 type="button"
                 onClick={handleToggleAllAttendance}
                 className={`text-xs px-3.5 py-1.5 rounded-lg font-bold border transition-all shadow-md ${
@@ -775,33 +883,33 @@ export default function Home() {
                 ({presentCount}/{totalCount} Present)
               </span>
             </div>
-            
-            <input 
-              type="date" 
-              value={markedDate} 
+
+            <input
+              type="date"
+              value={markedDate}
               min={todayStr}
               max={todayStr}
-              onChange={(e) => setMarkedDate(e.target.value)} 
-              className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-200" 
+              onChange={(e) => setMarkedDate(e.target.value)}
+              className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-200"
             />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto mb-4 border border-slate-800/80 p-4 rounded-xl bg-slate-950/50">
             {sortedStudentsList.map(([id, s]) => (
-              <label 
-                key={id} 
+              <label
+                key={id}
                 className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border ${
-                  attendance[id] 
-                    ? 'bg-slate-900/90 border-cyan-500/40 hover:border-cyan-500' 
+                  attendance[id]
+                    ? 'bg-slate-900/90 border-cyan-500/40 hover:border-cyan-500'
                     : 'bg-slate-950/80 border-slate-800 hover:border-slate-700 opacity-60'
                 }`}>
                 <span className={`text-sm font-medium ${attendance[id] ? 'text-slate-100 font-semibold' : 'text-slate-400 line-through'}`}>
                   {s.rollNumber} - {s.name}
                 </span>
-                <input 
-                  type="checkbox" 
-                  checked={attendance[id] ?? true} 
-                  onChange={() => handleAttendanceChange(id)} 
+                <input
+                  type="checkbox"
+                  checked={attendance[id] ?? true}
+                  onChange={() => handleAttendanceChange(id)}
                   className="w-5 h-5 accent-cyan-500 rounded cursor-pointer"
                 />
               </label>
@@ -814,14 +922,71 @@ export default function Home() {
         </div>
       )}
 
-      {/* Export Actions */}
+      {/* Export Actions + Present/Absent Result */}
       {submittedAttendance && (
-        <div className="max-w-4xl mx-auto bg-slate-900 border border-cyan-500/30 rounded-2xl shadow-xl p-6 text-center mb-6">
-          <h3 className="text-lg font-bold text-cyan-400 mb-2">✅ Attendance Recorded Successfully!</h3>
-          <p className="text-xs text-slate-400 mb-4">Saved securely and set to expire automatically in 48 hours.</p>
-          <div className="flex flex-col sm:flex-row justify-center gap-4">
-            <button onClick={downloadJPG} className="bg-indigo-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-900/20">
-              📸 Download JPG
+        <div className="max-w-4xl mx-auto bg-slate-900 border border-cyan-500/30 rounded-2xl shadow-xl p-6 mb-6">
+          <div className="text-center mb-5">
+            <h3 className="text-lg font-bold text-cyan-400 mb-1">✅ Attendance Recorded Successfully!</h3>
+            <p className="text-xs text-slate-400">
+              {submittedAttendance.date} • Saved and set to expire automatically in 48 hours.
+            </p>
+          </div>
+
+          {/* Summary */}
+          <div className="grid grid-cols-2 gap-3 mb-5">
+            <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-xl p-3 text-center">
+              <p className="text-2xl font-extrabold text-emerald-400">{submittedAttendance.present.length}</p>
+              <p className="text-xs text-emerald-300 font-semibold">Present</p>
+            </div>
+            <div className="bg-rose-500/15 border border-rose-500/40 rounded-xl p-3 text-center">
+              <p className="text-2xl font-extrabold text-rose-400">{submittedAttendance.absent.length}</p>
+              <p className="text-xs text-rose-300 font-semibold">Absent</p>
+            </div>
+          </div>
+
+          {/* Present & Absent lists */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            {/* Present */}
+            <div className="border border-emerald-500/40 rounded-xl overflow-hidden">
+              <div className="bg-emerald-600 text-white text-sm font-bold px-4 py-2">
+                Present ({submittedAttendance.present.length})
+              </div>
+              <div className="max-h-64 overflow-y-auto divide-y divide-emerald-900/40">
+                {submittedAttendance.present.length === 0 ? (
+                  <p className="p-3 text-xs text-slate-400">No present students</p>
+                ) : (
+                  submittedAttendance.present.map((p, idx) => (
+                    <div key={idx} className="px-4 py-2 text-sm bg-emerald-500/20 text-emerald-100">
+                      <span className="font-mono font-semibold">{p.roll}</span> - {p.name}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Absent */}
+            <div className="border border-rose-500/40 rounded-xl overflow-hidden">
+              <div className="bg-rose-600 text-white text-sm font-bold px-4 py-2">
+                Absent ({submittedAttendance.absent.length})
+              </div>
+              <div className="max-h-64 overflow-y-auto divide-y divide-rose-900/40">
+                {submittedAttendance.absent.length === 0 ? (
+                  <p className="p-3 text-xs text-slate-400">No absent students 🎉</p>
+                ) : (
+                  submittedAttendance.absent.map((a, idx) => (
+                    <div key={idx} className="px-4 py-2 text-sm bg-rose-500/20 text-rose-100">
+                      <span className="font-mono font-semibold">{a.roll}</span> - {a.name}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Download buttons */}
+          <div className="flex flex-col sm:flex-row justify-center gap-3">
+            <button onClick={downloadFullJPG} className="bg-purple-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-purple-500 transition-all shadow-lg shadow-purple-900/20">
+              🖼️ Download Present + Absent (JPG)
             </button>
             <button onClick={copyWhatsAppText} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-900/20">
               💬 Copy WhatsApp Text
@@ -830,27 +995,54 @@ export default function Home() {
         </div>
       )}
 
-      {/* Hidden Card Template for JPG Export */}
+      {/* Hidden Card Template for JPG Export: Present (green) + Absent (red) */}
       <div style={{ position: 'absolute', left: '-9999px' }}>
-        <div ref={exportRef} style={{ width: '600px', padding: '30px', background: 'white', color: 'black', fontFamily: 'Arial, sans-serif' }}>
+        <div ref={exportFullRef} style={{ width: '700px', padding: '30px', background: '#ffffff', color: '#000000', fontFamily: 'Arial, sans-serif' }}>
           <h2 style={{ textAlign: 'center', color: '#1e3a8a', margin: '0 0 10px 0' }}>{crData?.collegeName}</h2>
           <p style={{ textAlign: 'center', fontSize: '14px', color: '#4b5563', margin: '0 0 20px 0' }}>
             Branch: {crData?.branch} | Sec: {crData?.section} | Year: {crData?.year} | TG: {crData?.tgName}
           </p>
           <hr style={{ border: '1px solid #e5e7eb', marginBottom: '20px' }} />
           <h3 style={{ margin: '0 0 10px 0' }}>Attendance Report - {submittedAttendance?.date}</h3>
-          <p><strong>CR Name:</strong> {crData?.crName} ({crData?.crRollNumber})</p>
-          <p><strong>Total Present:</strong> {submittedAttendance?.present.length} / {Object.keys(students).length}</p>
-          
-          <div style={{ marginTop: '20px', background: '#f3f4f6', padding: '15px', borderRadius: '8px' }}>
-            <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>Present Students:</p>
-            <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '14px' }}>
-              {submittedAttendance?.present.map((p, idx) => (
-                <li key={idx} style={{ marginBottom: '4px' }}>
+          <p style={{ margin: '4px 0' }}><strong>CR Name:</strong> {crData?.crName} ({crData?.crRollNumber})</p>
+          <p style={{ margin: '4px 0 16px 0' }}>
+            <strong>Present:</strong> <span style={{ color: '#15803d', fontWeight: 'bold' }}>{submittedAttendance?.present.length}</span>
+            {'  |  '}
+            <strong>Absent:</strong> <span style={{ color: '#b91c1c', fontWeight: 'bold' }}>{submittedAttendance?.absent.length}</span>
+            {'  |  '}
+            <strong>Total:</strong> {Object.keys(students).length}
+          </p>
+
+          {/* Present - green */}
+          <div style={{ background: '#dcfce7', border: '2px solid #16a34a', borderRadius: '8px', padding: '15px', marginBottom: '16px' }}>
+            <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', color: '#166534', fontSize: '16px' }}>
+              Present Students ({submittedAttendance?.present.length})
+            </p>
+            {submittedAttendance?.present.length === 0 ? (
+              <p style={{ margin: 0, fontSize: '14px', color: '#166534' }}>None</p>
+            ) : (
+              submittedAttendance?.present.map((p, idx) => (
+                <div key={idx} style={{ fontSize: '14px', color: '#14532d', padding: '4px 0', borderBottom: '1px solid #bbf7d0' }}>
                   {idx + 1}. {p.roll} - {p.name}
-                </li>
-              ))}
-            </ul>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Absent - red */}
+          <div style={{ background: '#fee2e2', border: '2px solid #dc2626', borderRadius: '8px', padding: '15px' }}>
+            <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', color: '#991b1b', fontSize: '16px' }}>
+              Absent Students ({submittedAttendance?.absent.length})
+            </p>
+            {submittedAttendance?.absent.length === 0 ? (
+              <p style={{ margin: 0, fontSize: '14px', color: '#991b1b' }}>None</p>
+            ) : (
+              submittedAttendance?.absent.map((a, idx) => (
+                <div key={idx} style={{ fontSize: '14px', color: '#7f1d1d', padding: '4px 0', borderBottom: '1px solid #fecaca' }}>
+                  {idx + 1}. {a.roll} - {a.name}
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
