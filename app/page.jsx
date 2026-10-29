@@ -1,4 +1,4 @@
-// app/page.jsx
+
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import { auth, db } from '@/lib/firebase';
