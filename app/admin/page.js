@@ -1,10 +1,11 @@
-
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { ref, get, child, remove, set } from "firebase/database";
+import { ref, get, child, remove, set, update } from "firebase/database";
 import { useRouter } from "next/navigation";
+import { getLocalDate, formatDate } from "@/lib/dateUtils";
+import { RETENTION_DAYS } from "@/lib/config";
 
 export default function AdminDashboard() {
   const [adminUser, setAdminUser] = useState(null);
@@ -14,6 +15,7 @@ export default function AdminDashboard() {
   const [users, setUsers] = useState({});
   const [studentsData, setStudentsData] = useState({});
   const [attendanceData, setAttendanceData] = useState({});
+  const [currentAnnouncement, setCurrentAnnouncement] = useState(null);
   const [announcementText, setAnnouncementText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -21,51 +23,76 @@ export default function AdminDashboard() {
   const [attSearch, setAttSearch] = useState("");
   const [attDateFilter, setAttDateFilter] = useState("");
   const [attStatusFilter, setAttStatusFilter] = useState("all"); // all | marked | notMarked
-  const [expandedCRs, setExpandedCRs] = useState({}); 
-  const [expandedRecords, setExpandedRecords] = useState({}); 
+  const [expandedCRs, setExpandedCRs] = useState({});
+  const [expandedRecords, setExpandedRecords] = useState({});
   const [refreshing, setRefreshing] = useState(false);
+
+  // Toast (replaces alert)
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const showToast = (message, type = "success") => {
+    setToast({ message, type });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  };
 
   const router = useRouter();
 
-  const MASTER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_MASTER_ADMIN_EMAIL; 
-  const todayStr = new Date().toISOString().split("T")[0];
+  const MASTER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_MASTER_ADMIN_EMAIL;
+  const todayStr = getLocalDate();
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
         router.push("/login");
-      } else {
-        if (user.email !== MASTER_ADMIN_EMAIL) {
-          alert("Access Denied: You are not authorized as Administrator.");
-          router.push("/");
-          return;
-        }
+        return;
+      }
 
-        setAdminUser(user);
+      const isAdmin =
+        !!MASTER_ADMIN_EMAIL &&
+        !!user.email &&
+        user.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
+
+      if (!isAdmin) {
+        router.push("/");
+        return;
+      }
+
+      setAdminUser(user);
+      try {
         await fetchAllSystemData();
+      } catch (err) {
+        console.error(err);
+        showToast("Could not load system data: " + err.message, "error");
+      } finally {
         setLoading(false);
       }
     });
     return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   const fetchAllSystemData = async () => {
     const dbRef = ref(db);
-
-    const usersSnap = await get(child(dbRef, "users"));
+    const [usersSnap, studentsSnap, attSnap, annSnap] = await Promise.all([
+      get(child(dbRef, "users")),
+      get(child(dbRef, "students")),
+      get(child(dbRef, "attendance")),
+      get(child(dbRef, "announcements/global")),
+    ]);
     setUsers(usersSnap.exists() ? usersSnap.val() : {});
-
-    const studentsSnap = await get(child(dbRef, "students"));
     setStudentsData(studentsSnap.exists() ? studentsSnap.val() : {});
-
-    const attSnap = await get(child(dbRef, "attendance"));
     setAttendanceData(attSnap.exists() ? attSnap.val() : {});
+    setCurrentAnnouncement(annSnap.exists() ? annSnap.val() : null);
   };
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await fetchAllSystemData();
+      showToast("Data refreshed.");
+    } catch (err) {
+      showToast("Refresh failed: " + err.message, "error");
     } finally {
       setRefreshing(false);
     }
@@ -74,18 +101,23 @@ export default function AdminDashboard() {
   const handleDeleteCR = async (uid) => {
     if (
       !confirm(
-        "Are you sure you want to delete this CR and their associated data?",
+        "Delete this CR's profile, students and attendance records? (Their login account stays in Firebase Authentication.)",
       )
     )
       return;
     try {
-      await remove(ref(db, `users/${uid}`));
-      await remove(ref(db, `students/${uid}`));
-      await remove(ref(db, `attendance/${uid}`));
-      alert("CR account and data removed successfully.");
-      fetchAllSystemData();
+      // One atomic multi-path delete
+      const updates = {
+        [`users/${uid}`]: null,
+        [`students/${uid}`]: null,
+        [`attendance/${uid}`]: null,
+      };
+      if (users[uid]?.userId) updates[`userIds/${users[uid].userId}`] = null;
+      await update(ref(db), updates);
+      showToast("CR data removed successfully.");
+      await fetchAllSystemData();
     } catch (err) {
-      alert("Error deleting CR: " + err.message);
+      showToast("Error deleting CR: " + err.message, "error");
     }
   };
 
@@ -94,14 +126,28 @@ export default function AdminDashboard() {
     if (!announcementText.trim()) return;
 
     try {
-      await set(ref(db, `announcements/global`), {
-        message: announcementText,
+      const payload = {
+        message: announcementText.trim(),
         timestamp: Date.now(),
-      });
+      };
+      await set(ref(db, `announcements/global`), payload);
+      setCurrentAnnouncement(payload);
       setAnnouncementText("");
-      alert("Announcement broadcasted successfully to all CR dashboards!");
+      showToast("Announcement broadcasted to all CR dashboards!");
     } catch (err) {
-      alert("Error broadcasting announcement: " + err.message);
+      showToast("Error broadcasting announcement: " + err.message, "error");
+    }
+  };
+
+  const handleClearAnnouncement = async () => {
+    if (!confirm("Remove the current announcement from all dashboards?"))
+      return;
+    try {
+      await remove(ref(db, "announcements/global"));
+      setCurrentAnnouncement(null);
+      showToast("Announcement removed.");
+    } catch (err) {
+      showToast("Error removing announcement: " + err.message, "error");
     }
   };
 
@@ -128,18 +174,18 @@ export default function AdminDashboard() {
 
   const totalCRs = Object.keys(users).length;
 
-  // Calculate total actual students safely
   let totalStudents = 0;
-  Object.entries(studentsData).forEach(([crUid, crStudents]) => {
+  Object.values(studentsData).forEach((crStudents) => {
     if (crStudents && typeof crStudents === "object") {
       totalStudents += Object.keys(crStudents).length;
     }
   });
 
-  // Filtered CRs based on search input (CR management tab)
   const filteredCRs = Object.entries(users).filter(([uid, cr]) => {
     const query = searchQuery.toLowerCase();
     return (
+      cr.userId?.toLowerCase().includes(query) ||
+      uid.toLowerCase() === query ||
       cr.crName?.toLowerCase().includes(query) ||
       cr.crRollNumber?.toLowerCase().includes(query) ||
       cr.collegeName?.toLowerCase().includes(query) ||
@@ -148,24 +194,22 @@ export default function AdminDashboard() {
     );
   });
 
-  // ---- Attendance tab data ----
-  // How many CRs marked attendance today
   const markedTodayCount = Object.keys(users).filter(
     (uid) => attendanceData[uid] && attendanceData[uid][todayStr],
   ).length;
 
-  // Build per-CR attendance rows (every CR is listed, even without records)
   const attendanceRows = Object.entries(users)
     .map(([uid, cr]) => {
       const records = Object.entries(attendanceData[uid] || {})
         .map(([dateKey, record]) => ({ dateKey, ...record }))
-        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)); // newest first
+        .sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1)); // newest date first
       return { uid, cr, records };
     })
     .filter(({ cr, records }) => {
       const q = attSearch.toLowerCase();
       const matchesSearch =
         !q ||
+        cr.userId?.toLowerCase().includes(q) ||
         cr.crName?.toLowerCase().includes(q) ||
         cr.crRollNumber?.toLowerCase().includes(q) ||
         cr.collegeName?.toLowerCase().includes(q) ||
@@ -173,7 +217,6 @@ export default function AdminDashboard() {
         cr.section?.toLowerCase().includes(q) ||
         cr.tgName?.toLowerCase().includes(q);
 
-      // Date filter: if a date is picked, show only CRs that marked on that date
       const marked = attDateFilter
         ? records.some(
             (r) => r.dateKey === attDateFilter || r.date === attDateFilter,
@@ -190,6 +233,18 @@ export default function AdminDashboard() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
+      {toast && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-sm w-[90%] px-4 py-3 rounded-xl text-sm font-semibold shadow-2xl border ${
+            toast.type === "error"
+              ? "bg-rose-950 text-rose-200 border-rose-500/50"
+              : "bg-emerald-950 text-emerald-200 border-emerald-500/50"
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+
       <div className="max-w-6xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <span className="bg-cyan-500/10 text-cyan-400 text-xs font-bold px-3 py-1 rounded-full border border-cyan-500/20 uppercase tracking-wider">
@@ -283,8 +338,9 @@ export default function AdminDashboard() {
                 Platform Status
               </h2>
               <p className="text-sm text-slate-400">
-                All services operational. Automatic attendance record pruning
-                protocol is active across user instances.
+                All services operational. Attendance records are kept for{" "}
+                {RETENTION_DAYS} days; older records are cleaned up when a CR
+                opens their dashboard.
               </p>
             </div>
           </div>
@@ -297,11 +353,10 @@ export default function AdminDashboard() {
                 Class Representatives & Rosters ({filteredCRs.length} /{" "}
                 {totalCRs})
               </h2>
-              {/* Search Bar Input */}
               <div className="w-full md:w-72">
                 <input
                   type="text"
-                  placeholder="🔍 Search by CR name, roll, branch..."
+                  placeholder="🔍 Search by User ID (10 digits), name, roll..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500 transition-all"
@@ -332,6 +387,23 @@ export default function AdminDashboard() {
                           <span className="bg-cyan-500/10 text-cyan-400 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-cyan-500/20">
                             CR • Roll: {cr.crRollNumber}
                           </span>
+                          {cr.userId ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard?.writeText(cr.userId);
+                                showToast(`Copied ${cr.userId}`);
+                              }}
+                              title="Click to copy"
+                              className="bg-indigo-500/10 text-indigo-300 text-xs font-mono font-semibold px-2.5 py-0.5 rounded-full border border-indigo-500/30 hover:bg-indigo-500 hover:text-white transition-all"
+                            >
+                              {cr.userId}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-500 italic">
+                              ID pending (assigned on next login)
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-400 mt-1">
                           {cr.collegeName} • {cr.branch} (Sec {cr.section}, Year{" "}
@@ -384,7 +456,6 @@ export default function AdminDashboard() {
 
         {activeTab === "attendance" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 space-y-5">
-            {/* Title + refresh */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
               <div>
                 <h2 className="text-lg font-bold text-slate-200">
@@ -407,11 +478,10 @@ export default function AdminDashboard() {
               </button>
             </div>
 
-            {/* Filters */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <input
                 type="text"
-                placeholder="🔍 Search CR, roll, college, branch, TG..."
+                placeholder="🔍 Search User ID, CR, roll, college, TG..."
                 value={attSearch}
                 onChange={(e) => setAttSearch(e.target.value)}
                 className="bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500 transition-all"
@@ -451,7 +521,6 @@ export default function AdminDashboard() {
               </select>
             </div>
 
-            {/* CR list */}
             <div className="space-y-4 max-h-[650px] overflow-y-auto pr-1">
               {attendanceRows.length === 0 ? (
                 <p className="text-sm text-slate-400 text-center py-6">
@@ -467,7 +536,6 @@ export default function AdminDashboard() {
                     studentsData[uid] || {},
                   ).length;
 
-                  // When a date filter is active, only show that day's record
                   const visibleRecords = attDateFilter
                     ? records.filter(
                         (r) =>
@@ -481,7 +549,6 @@ export default function AdminDashboard() {
                       key={uid}
                       className="border border-slate-800 bg-slate-950/60 rounded-xl overflow-hidden"
                     >
-                      {/* CR header (click to expand) */}
                       <button
                         type="button"
                         onClick={() => toggleCR(uid)}
@@ -493,13 +560,18 @@ export default function AdminDashboard() {
                             <span className="text-slate-500 font-normal text-xs">
                               ({cr.crRollNumber})
                             </span>
+                            {cr.userId && (
+                              <span className="ml-2 text-indigo-300 font-mono text-xs">
+                                {cr.userId}
+                              </span>
+                            )}
                           </h4>
                           <p className="text-xs text-slate-400 mt-0.5">
                             {cr.collegeName} • {cr.branch} Sec {cr.section} •
                             Year {cr.year} • TG: {cr.tgName}
                           </p>
                         </div>
-                        <div className="flex items-center gap-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
                           <span className="text-slate-400">
                             {totalStudentsOfCR} students
                           </span>
@@ -522,7 +594,6 @@ export default function AdminDashboard() {
                         </div>
                       </button>
 
-                      {/* Records */}
                       {isOpen && (
                         <div className="border-t border-slate-800 p-4 space-y-3">
                           {visibleRecords.length === 0 ? (
@@ -557,7 +628,10 @@ export default function AdminDashboard() {
                                     className="w-full flex flex-wrap justify-between items-center gap-2 p-2.5 text-xs text-left hover:bg-slate-800/60 transition-all"
                                   >
                                     <span className="text-slate-300 font-medium">
-                                      📅 {record.date || record.dateKey}
+                                      📅{" "}
+                                      {formatDate(
+                                        record.date || record.dateKey,
+                                      )}
                                       {record.timestamp && (
                                         <span className="text-slate-500 font-normal ml-2">
                                           saved{" "}
@@ -588,7 +662,6 @@ export default function AdminDashboard() {
 
                                   {recOpen && (
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 border-t border-slate-800">
-                                      {/* Present - green */}
                                       <div className="border border-emerald-500/40 rounded-lg overflow-hidden">
                                         <div className="bg-emerald-600 text-white text-xs font-bold px-3 py-1.5">
                                           Present ({presentList.length})
@@ -614,7 +687,6 @@ export default function AdminDashboard() {
                                         </div>
                                       </div>
 
-                                      {/* Absent - red */}
                                       <div className="border border-rose-500/40 rounded-lg overflow-hidden">
                                         <div className="bg-rose-600 text-white text-xs font-bold px-3 py-1.5">
                                           Absent ({absentList.length})
@@ -661,8 +733,28 @@ export default function AdminDashboard() {
               Broadcast System Announcement
             </h2>
             <p className="text-xs text-slate-400 mb-4">
-              Send a notice that will display across all active CR dashboards.
+              Send a notice that will display on all CR dashboards. A new
+              announcement replaces the old one.
             </p>
+
+            {currentAnnouncement?.message && (
+              <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl">
+                <p className="text-xs font-bold text-amber-400 mb-1">
+                  Currently live:
+                </p>
+                <p className="text-sm text-amber-100 whitespace-pre-wrap">
+                  {currentAnnouncement.message}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleClearAnnouncement}
+                  className="mt-2 text-xs text-rose-400 hover:text-white hover:bg-rose-500 border border-rose-500/30 px-3 py-1 rounded-lg transition-all"
+                >
+                  Remove announcement
+                </button>
+              </div>
+            )}
+
             <form onSubmit={handlePostAnnouncement} className="space-y-4">
               <textarea
                 rows="4"
@@ -670,6 +762,7 @@ export default function AdminDashboard() {
                 value={announcementText}
                 onChange={(e) => setAnnouncementText(e.target.value)}
                 required
+                maxLength={500}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-200 placeholder:text-slate-500"
               />
               <button

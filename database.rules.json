@@ -1,0 +1,53 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['crName','crRollNumber','collegeName','branch','section','year','tgName'])",
+        "userId": {
+          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{10}$/) && (!data.exists() || data.val() === newData.val())"
+        }
+      }
+    },
+    "students": {
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        "$sid": {
+          ".validate": "newData.hasChildren(['name','rollNumber']) && newData.child('name').isString() && newData.child('name').val().length <= 100 && newData.child('rollNumber').isString() && newData.child('rollNumber').val().length <= 30"
+        }
+      }
+    },
+    "attendance": {
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        "$date": {
+          ".validate": "$date.matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)"
+        }
+      }
+    },
+    "announcements": {
+      "global": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'"
+      }
+    },
+    "userIds": {
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      "$id": {
+        ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
+      }
+    }
+  }
+}

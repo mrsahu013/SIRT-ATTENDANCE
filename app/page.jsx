@@ -1,11 +1,29 @@
-
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { ref, set, get, child, push, update, remove } from 'firebase/database';
 import { useRouter } from 'next/navigation';
 import html2canvas from 'html2canvas';
+import { getLocalDate, shiftDate, normalizeRoll, formatDate, formatDateForFile } from '@/lib/dateUtils';
+import { RETENTION_DAYS, MIN_ATTENDANCE_PERCENT } from '@/lib/config';
+import { ensureUserId } from '@/lib/userId';
+
+// Build the { studentId: true/false } map for a date from a saved record.
+// Students not listed as absent (including newly added ones) default to present.
+const buildAttendanceFor = (studentsObj, record) => {
+  const result = {};
+  const absentRolls = new Set(
+    (record?.absent || []).map((a) => normalizeRoll(a.roll))
+  );
+  Object.entries(studentsObj).forEach(([id, s]) => {
+    result[id] = !absentRolls.has(normalizeRoll(s.rollNumber));
+  });
+  return result;
+};
+
+const byRoll = (a, b) =>
+  a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true });
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -15,6 +33,19 @@ export default function Home() {
   const [students, setStudents] = useState({});
   const [studentName, setStudentName] = useState('');
   const [studentRoll, setStudentRoll] = useState('');
+  const [studentSaving, setStudentSaving] = useState(false);
+
+  // Toast (replaces alert)
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  };
+
+  // Announcement from admin
+  const [announcement, setAnnouncement] = useState(null);
 
   // Edit profile (TG name / Year) state
   const [editingProfile, setEditingProfile] = useState(false);
@@ -39,14 +70,18 @@ export default function Home() {
   const [rangeEnd, setRangeEnd] = useState('1250');
   const [showGenerator, setShowGenerator] = useState(false);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getLocalDate();
+  const oldestStr = shiftDate(todayStr, -(RETENTION_DAYS - 1));
   const MASTER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_MASTER_ADMIN_EMAIL;
 
   // Attendance state
   const [attendance, setAttendance] = useState({});
   const [markedDate, setMarkedDate] = useState(todayStr);
   const [submittedAttendance, setSubmittedAttendance] = useState(null);
-  const exportFullRef = useRef(null); // present + absent JPG
+  const [history, setHistory] = useState({}); // { 'YYYY-MM-DD': record }
+  const [savingAttendance, setSavingAttendance] = useState(false);
+  const [studentSearch, setStudentSearch] = useState('');
+  const exportFullRef = useRef(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -56,57 +91,79 @@ export default function Home() {
         setUser(null);
         setHasProfile(false);
         router.push('/login');
-      } else {
-        setUser(currentUser);
+        return;
+      }
+
+      setUser(currentUser);
+      try {
         const dbRef = ref(db);
 
-        // Fetch CR Profile from database
+        // CR profile
         const crSnap = await get(child(dbRef, `users/${currentUser.uid}`));
-
-        // Check if profile exists and has tgName
         if (!crSnap.exists() || !crSnap.val().tgName) {
+          // Signed in but registration not completed -> finish registration
           setHasProfile(false);
           setLoadingAuth(false);
-          await signOut(auth);
-          router.push('/login');
+          router.push('/register');
           return;
         }
 
-        // Profile and tgName exist
         setHasProfile(true);
-        setCrData(crSnap.val());
+        let profile = crSnap.val();
+        // Older accounts get their unique ID on first login after this update
+        if (!profile.userId) {
+          try {
+            const newId = await ensureUserId(currentUser.uid);
+            profile = { ...profile, userId: newId };
+          } catch (idErr) {
+            console.error('Could not allocate user ID', idErr);
+          }
+        }
+        setCrData(profile);
         setLoadingAuth(false);
 
-        // Fetch Students
-        const studentsSnap = await get(child(dbRef, `students/${currentUser.uid}`));
-        if (studentsSnap.exists()) {
-          const fetchedStudents = studentsSnap.val();
-          setStudents(fetchedStudents);
-          const initialAtt = {};
-          Object.keys(fetchedStudents).forEach((id) => {
-            initialAtt[id] = true;
+        // Students + attendance + announcement in parallel
+        const [studentsSnap, attSnap, annSnap] = await Promise.all([
+          get(child(dbRef, `students/${currentUser.uid}`)),
+          get(child(dbRef, `attendance/${currentUser.uid}`)),
+          get(child(dbRef, 'announcements/global')).catch(() => null),
+        ]);
+
+        const fetchedStudents = studentsSnap.exists() ? studentsSnap.val() : {};
+        const hist = attSnap.exists() ? { ...attSnap.val() } : {};
+
+        // Cleanup records older than the retention window (one multi-path write)
+        const cutoff = shiftDate(getLocalDate(), -(RETENTION_DAYS - 1));
+        const expired = Object.keys(hist).filter((k) => k < cutoff);
+        if (expired.length > 0) {
+          const updates = {};
+          expired.forEach((k) => {
+            updates[`attendance/${currentUser.uid}/${k}`] = null;
+            delete hist[k];
           });
-          setAttendance(initialAtt);
+          update(ref(db), updates).catch((e) => console.error('Cleanup failed', e));
         }
 
-        // Fetch Attendance (with 2-day auto-cleanup check)
-        const attSnap = await get(child(dbRef, `attendance/${currentUser.uid}`));
-        if (attSnap.exists()) {
-          const attData = attSnap.val();
-          const now = Date.now();
-          const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+        setStudents(fetchedStudents);
+        setHistory(hist);
 
-          Object.entries(attData).forEach(async ([dateKey, record]) => {
-            if (now - record.timestamp > twoDaysMs) {
-              await remove(ref(db, `attendance/${currentUser.uid}/${dateKey}`));
-            }
-          });
-        }
+        // Load today's saved record (if any) so a refresh doesn't lose it
+        const todayRecord = hist[getLocalDate()] || null;
+        setAttendance(buildAttendanceFor(fetchedStudents, todayRecord));
+        setSubmittedAttendance(todayRecord);
+
+        if (annSnap && annSnap.exists()) setAnnouncement(annSnap.val());
+      } catch (err) {
+        console.error(err);
+        setLoadingAuth(false);
+        showToast('Could not load your data. Please refresh.', 'error');
       }
     });
     return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
+  // ---------- Profile ----------
   const startEditProfile = () => {
     setProfileTg(crData?.tgName || '');
     setProfileYear(crData?.year || '');
@@ -127,7 +184,7 @@ export default function Home() {
     const year = profileYear.trim();
 
     if (!tgName || !year) {
-      alert('TG Name and Year cannot be empty!');
+      showToast('TG Name and Year cannot be empty!', 'error');
       return;
     }
 
@@ -136,57 +193,129 @@ export default function Home() {
       await update(ref(db, `users/${user.uid}`), { tgName, year });
       setCrData((prev) => ({ ...prev, tgName, year }));
       setEditingProfile(false);
-      alert('Profile updated successfully!');
+      showToast('Profile updated successfully!');
     } catch (error) {
       console.error(error);
-      alert('Error updating profile. Please try again.');
+      showToast('Error updating profile. Please try again.', 'error');
     } finally {
       setProfileSaving(false);
     }
   };
 
+  // ---------- Students ----------
   const handleAddOrUpdateStudent = async (e) => {
     e.preventDefault();
     if (!user || !hasProfile) {
-      alert('Error: You must complete your CR registration first!');
-      router.push('/login');
+      showToast('You must complete your CR registration first!', 'error');
+      router.push('/register');
+      return;
+    }
+
+    const name = studentName.trim();
+    const roll = normalizeRoll(studentRoll);
+    if (!name || !roll) {
+      showToast('Name and Roll Number are required.', 'error');
       return;
     }
 
     const duplicateEntry = Object.entries(students).find(
-      ([id, s]) => s.rollNumber === studentRoll && id !== editingStudentId
+      ([id, s]) => normalizeRoll(s.rollNumber) === roll && id !== editingStudentId
     );
     if (duplicateEntry) {
-      alert('Error: This Roll Number already exists in your list!');
+      showToast('This Roll Number already exists in your list!', 'error');
       return;
     }
 
-    if (editingStudentId) {
-      const studentRef = ref(db, `students/${user.uid}/${editingStudentId}`);
-      await update(studentRef, { name: studentName, rollNumber: studentRoll });
-
-      setStudents((prev) => ({
-        ...prev,
-        [editingStudentId]: { name: studentName, rollNumber: studentRoll },
-      }));
-
-      setEditingStudentId(null);
-    } else {
-      const newStudentRef = push(ref(db, `students/${user.uid}`));
-      await set(newStudentRef, { name: studentName, rollNumber: studentRoll });
-
-      setStudents((prev) => ({
-        ...prev,
-        [newStudentRef.key]: { name: studentName, rollNumber: studentRoll },
-      }));
-      setAttendance((prev) => ({ ...prev, [newStudentRef.key]: true }));
+    setStudentSaving(true);
+    try {
+      if (editingStudentId) {
+        await update(ref(db, `students/${user.uid}/${editingStudentId}`), {
+          name,
+          rollNumber: roll,
+        });
+        setStudents((prev) => ({
+          ...prev,
+          [editingStudentId]: { name, rollNumber: roll },
+        }));
+        setEditingStudentId(null);
+        showToast('Student updated.');
+      } else {
+        const newStudentRef = push(ref(db, `students/${user.uid}`));
+        await set(newStudentRef, { name, rollNumber: roll });
+        setStudents((prev) => ({
+          ...prev,
+          [newStudentRef.key]: { name, rollNumber: roll },
+        }));
+        setAttendance((prev) => ({ ...prev, [newStudentRef.key]: true }));
+        showToast('Student added.');
+      }
+      setStudentName('');
+      setStudentRoll('');
+    } catch (error) {
+      console.error(error);
+      showToast('Could not save student. Please try again.', 'error');
+    } finally {
+      setStudentSaving(false);
     }
+  };
 
+  const handleEditClick = (id, student) => {
+    setEditingStudentId(id);
+    setStudentName(student.name);
+    setStudentRoll(student.rollNumber);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingStudentId(null);
     setStudentName('');
     setStudentRoll('');
   };
 
-  // Generate roll numbers from range
+  const handleDeleteStudent = async (id) => {
+    if (!confirm('Are you sure you want to remove this student from your list?')) return;
+    try {
+      await remove(ref(db, `students/${user.uid}/${id}`));
+      setStudents((prev) => {
+        const updated = { ...prev };
+        delete updated[id];
+        return updated;
+      });
+      setAttendance((prev) => {
+        const updated = { ...prev };
+        delete updated[id];
+        return updated;
+      });
+      if (editingStudentId === id) handleCancelEdit();
+      showToast('Student removed.');
+    } catch (error) {
+      console.error(error);
+      showToast('Could not delete student.', 'error');
+    }
+  };
+
+  // Clear the whole class (new semester)
+  const handleClearAllStudents = async () => {
+    if (Object.keys(students).length === 0) return;
+    if (
+      !confirm(
+        'Remove ALL students from your list? Saved attendance records are kept. This cannot be undone.'
+      )
+    )
+      return;
+    try {
+      await remove(ref(db, `students/${user.uid}`));
+      setStudents({});
+      setAttendance({});
+      handleCancelEdit();
+      showToast('All students removed.');
+    } catch (error) {
+      console.error(error);
+      showToast('Could not clear students.', 'error');
+    }
+  };
+
+  // ---------- Bulk upload ----------
   const generateRollRange = () => {
     const start = parseInt(rangeStart, 10);
     const end = parseInt(rangeEnd, 10);
@@ -213,9 +342,8 @@ export default function Home() {
     setTimeout(() => setUploadStatus(''), 4000);
   };
 
-  // Validate and preview bulk data BEFORE uploading
   const validateBulkData = () => {
-    const lines = bulkInput.trim().split('\n').filter((line) => line.trim());
+    const lines = bulkInput.trim().split(/\r?\n/).filter((line) => line.trim());
 
     if (lines.length === 0) {
       setDuplicateWarnings(['❌ Please enter student data!']);
@@ -226,7 +354,7 @@ export default function Home() {
     const warnings = [];
     const seenRollNumbers = new Set();
     const existingRolls = new Set(
-      Object.entries(students).map(([_, s]) => s.rollNumber)
+      Object.values(students).map((s) => normalizeRoll(s.rollNumber))
     );
 
     lines.forEach((line, index) => {
@@ -238,22 +366,20 @@ export default function Home() {
       }
 
       const name = parts[0];
-      const rollNumber = parts[1];
+      const rollNumber = normalizeRoll(parts[1]);
 
       // Skip header row
       if (name.toLowerCase().includes('name') && rollNumber.toLowerCase().includes('roll')) {
         return;
       }
 
-      // Check for duplicates in the input itself
       if (seenRollNumbers.has(rollNumber)) {
-        warnings.push(`⚠️  Line ${index + 1}: Duplicate in your list - Roll ${rollNumber} appears multiple times`);
+        warnings.push(`⚠️ Line ${index + 1}: Duplicate in your list - Roll ${rollNumber} appears multiple times`);
         return;
       }
 
-      // Check if roll number already exists in database
       if (existingRolls.has(rollNumber)) {
-        warnings.push(`⚠️  Line ${index + 1}: Already in database - Roll ${rollNumber} (${name})`);
+        warnings.push(`⚠️ Line ${index + 1}: Already in database - Roll ${rollNumber} (${name})`);
         return;
       }
 
@@ -265,22 +391,23 @@ export default function Home() {
     return validEntries;
   };
 
-  // Handle preview/validation
   const handlePreviewData = () => {
-    validateBulkData();
+    const valid = validateBulkData();
+    if (valid.length > 0) {
+      setUploadStatus(`✓ ${valid.length} valid student${valid.length > 1 ? 's' : ''} ready to upload.`);
+      setTimeout(() => setUploadStatus(''), 3000);
+    }
   };
 
-  // Bulk upload handler
+  // Single multi-path write instead of one request per student
   const handleBulkUpload = async () => {
     if (!user || !hasProfile) {
-      alert('Error: You must complete your CR registration first!');
-      router.push('/login');
+      showToast('You must complete your CR registration first!', 'error');
+      router.push('/register');
       return;
     }
 
-    // Validate first
     const validEntries = validateBulkData();
-
     if (validEntries.length === 0) {
       setUploadStatus('✗ No valid entries to upload. Please fix the errors above.');
       return;
@@ -288,28 +415,26 @@ export default function Home() {
 
     setIsUploading(true);
     setUploadStatus('⏳ Uploading...');
-    let successCount = 0;
 
     try {
-      for (const entry of validEntries) {
-        const newStudentRef = push(ref(db, `students/${user.uid}`));
-        await set(newStudentRef, {
-          name: entry.name,
-          rollNumber: entry.rollNumber,
-        });
+      const updates = {};
+      const added = {};
+      const addedAtt = {};
+      validEntries.forEach((entry) => {
+        const key = push(ref(db, `students/${user.uid}`)).key; // key only, no write
+        const data = { name: entry.name, rollNumber: entry.rollNumber };
+        updates[`students/${user.uid}/${key}`] = data;
+        added[key] = data;
+        addedAtt[key] = true;
+      });
 
-        setStudents((prev) => ({
-          ...prev,
-          [newStudentRef.key]: { name: entry.name, rollNumber: entry.rollNumber },
-        }));
-        setAttendance((prev) => ({
-          ...prev,
-          [newStudentRef.key]: true,
-        }));
-        successCount++;
-      }
+      await update(ref(db), updates);
 
-      setUploadStatus(`✓ Successfully added ${successCount} student${successCount > 1 ? 's' : ''}!`);
+      setStudents((prev) => ({ ...prev, ...added }));
+      setAttendance((prev) => ({ ...prev, ...addedAtt }));
+
+      const count = validEntries.length;
+      setUploadStatus(`✓ Successfully added ${count} student${count > 1 ? 's' : ''}!`);
       setBulkInput('');
       setDuplicateWarnings([]);
 
@@ -325,16 +450,15 @@ export default function Home() {
     }
   };
 
-  // CSV file handler
   const handleCSVUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      const content = event.target?.result;
+      const content = String(event.target?.result || '').replace(/^\uFEFF/, '');
       const lines = content
-        .split('\n')
+        .split(/\r?\n/)
         .map((line) => line.trim())
         .filter((line) => line);
       setBulkInput(lines.join('\n'));
@@ -342,128 +466,7 @@ export default function Home() {
       setTimeout(() => setUploadStatus(''), 3000);
     };
     reader.readAsText(file);
-  };
-
-  const handleEditClick = (id, student) => {
-    setEditingStudentId(id);
-    setStudentName(student.name);
-    setStudentRoll(student.rollNumber);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleCancelEdit = () => {
-    setEditingStudentId(null);
-    setStudentName('');
-    setStudentRoll('');
-  };
-
-  const handleDeleteStudent = async (id) => {
-    if (!confirm('Are you sure you want to remove this student from your list?')) return;
-
-    await remove(ref(db, `students/${user.uid}/${id}`));
-    setStudents((prev) => {
-      const updated = { ...prev };
-      delete updated[id];
-      return updated;
-    });
-
-    setAttendance((prev) => {
-      const updated = { ...prev };
-      delete updated[id];
-      return updated;
-    });
-
-    if (editingStudentId === id) {
-      handleCancelEdit();
-    }
-  };
-
-  const handleAttendanceChange = (id) => {
-    setAttendance((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  // Check if all students are marked present
-  const allStudentsMarked =
-    Object.keys(students).length > 0 &&
-    Object.keys(students).every((id) => !!attendance[id]);
-
-  // Toggle Mark All / Unmark All
-  const handleToggleAllAttendance = () => {
-    const targetState = !allStudentsMarked;
-    const updatedAtt = {};
-    Object.keys(students).forEach((id) => {
-      updatedAtt[id] = targetState;
-    });
-    setAttendance(updatedAtt);
-  };
-
-  const submitAttendance = async () => {
-    if (!user || !hasProfile) {
-      alert('Error: You must complete your CR registration first!');
-      router.push('/login');
-      return;
-    }
-
-    const presentList = [];
-    const absentList = [];
-
-    const sortedStudentEntries = Object.entries(students).sort((a, b) =>
-      a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true })
-    );
-
-    sortedStudentEntries.forEach(([id, s]) => {
-      if (attendance[id]) {
-        presentList.push({ roll: s.rollNumber, name: s.name });
-      } else {
-        absentList.push({ roll: s.rollNumber, name: s.name });
-      }
-    });
-
-    const attendanceRecord = {
-      date: markedDate,
-      timestamp: Date.now(),
-      present: presentList,
-      absent: absentList,
-    };
-
-    await set(ref(db, `attendance/${user.uid}/${markedDate}`), attendanceRecord);
-    setSubmittedAttendance(attendanceRecord);
-    alert('Attendance Saved Successfully! Valid for 2 days.');
-  };
-
-  // Download: present (green) + absent (red) students
-  const downloadFullJPG = async () => {
-    if (!exportFullRef.current) return;
-    const canvas = await html2canvas(exportFullRef.current, {
-      scale: 2,
-      backgroundColor: '#ffffff',
-    });
-    const image = canvas.toDataURL('image/jpeg', 1.0);
-    const link = document.createElement('a');
-    link.href = image;
-    const crRoll = crData?.crRollNumber || 'CR';
-    link.download = `Attendance_Full_${crRoll}_${markedDate}.jpg`;
-    link.click();
-  };
-
-  const copyWhatsAppText = () => {
-    if (!submittedAttendance) return;
-    const presentRollsStr = submittedAttendance.present
-      .map((p) => p.roll.slice(-3))
-      .join(', ');
-
-    const text =
-      `📋 *ATTENDANCE REPORT* 📋\n` +
-      `🏫 *College:* ${crData?.collegeName}\n` +
-      `📚 *Class:* ${crData?.branch} - Sec ${crData?.section} (${crData?.year})\n` +
-      `📅 *Date:* ${submittedAttendance.date}\n` +
-      `👨‍🏫 *TG:* ${crData?.tgName}\n\n` +
-      `Total Present: ${submittedAttendance.present.length} / ${Object.keys(students).length}\n\n` +
-      `*Present Roll Nos*\n` +
-      `${presentRollsStr}`;
-
-    navigator.clipboard.writeText(text);
-    alert('Attendance text copied to clipboard for WhatsApp!');
+    e.target.value = ''; // allow re-selecting the same file
   };
 
   const downloadSampleCSV = () => {
@@ -478,13 +481,219 @@ export default function Home() {
     document.body.removeChild(element);
   };
 
-  const sortedStudentsList = Object.entries(students).sort((a, b) =>
-    a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true })
+  // ---------- Attendance ----------
+  const handleAttendanceChange = (id) => {
+    setAttendance((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const allStudentsMarked =
+    Object.keys(students).length > 0 &&
+    Object.keys(students).every((id) => !!attendance[id]);
+
+  const handleToggleAllAttendance = () => {
+    const targetState = !allStudentsMarked;
+    const updatedAtt = {};
+    Object.keys(students).forEach((id) => {
+      updatedAtt[id] = targetState;
+    });
+    setAttendance(updatedAtt);
+  };
+
+  // Switch date: load the saved record for that day (or reset to all present)
+  const handleDateChange = (dateStr) => {
+    if (!dateStr) return;
+    if (dateStr > todayStr || dateStr < oldestStr) return;
+    setMarkedDate(dateStr);
+    const rec = history[dateStr] || null;
+    setAttendance(buildAttendanceFor(students, rec));
+    setSubmittedAttendance(rec);
+    setStudentSearch('');
+  };
+
+  const submitAttendance = async () => {
+    if (!user || !hasProfile) {
+      showToast('You must complete your CR registration first!', 'error');
+      router.push('/register');
+      return;
+    }
+    if (Object.keys(students).length === 0) return;
+
+    const existing = history[markedDate];
+    if (
+      existing &&
+      !confirm(`Attendance for ${formatDate(markedDate)} is already saved. Overwrite it?`)
+    ) {
+      return;
+    }
+
+    const presentList = [];
+    const absentList = [];
+    Object.entries(students)
+      .sort(byRoll)
+      .forEach(([id, s]) => {
+        const item = { roll: s.rollNumber, name: s.name };
+        if (attendance[id]) presentList.push(item);
+        else absentList.push(item);
+      });
+
+    const attendanceRecord = {
+      date: markedDate,
+      timestamp: Date.now(),
+      present: presentList,
+      absent: absentList,
+    };
+
+    setSavingAttendance(true);
+    try {
+      await set(ref(db, `attendance/${user.uid}/${markedDate}`), attendanceRecord);
+      setHistory((prev) => ({ ...prev, [markedDate]: attendanceRecord }));
+      setSubmittedAttendance(attendanceRecord);
+      showToast(
+        `Saved ${formatDate(markedDate)}: ${presentList.length} present, ${absentList.length} absent.`
+      );
+    } catch (error) {
+      console.error(error);
+      showToast('Could not save attendance. Check your connection and try again.', 'error');
+    } finally {
+      setSavingAttendance(false);
+    }
+  };
+
+  const handleDeleteRecord = async (dateKey) => {
+    if (!confirm(`Delete the saved attendance for ${formatDate(dateKey)}?`)) return;
+    try {
+      await remove(ref(db, `attendance/${user.uid}/${dateKey}`));
+      setHistory((prev) => {
+        const updated = { ...prev };
+        delete updated[dateKey];
+        return updated;
+      });
+      if (markedDate === dateKey) {
+        setSubmittedAttendance(null);
+        setAttendance(buildAttendanceFor(students, null));
+      }
+      showToast('Record deleted.');
+    } catch (error) {
+      console.error(error);
+      showToast('Could not delete record.', 'error');
+    }
+  };
+
+  // ---------- Export / share ----------
+  const downloadFullJPG = async () => {
+    if (!exportFullRef.current || !submittedAttendance) return;
+    try {
+      const canvas = await html2canvas(exportFullRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+      });
+      const image = canvas.toDataURL('image/jpeg', 1.0);
+      const link = document.createElement('a');
+      link.href = image;
+      const crRoll = crData?.crRollNumber || 'CR';
+      link.download = `Attendance_Full_${crRoll}_${formatDateForFile(submittedAttendance.date)}.jpg`;
+      link.click();
+    } catch (error) {
+      console.error(error);
+      showToast('Could not create the image.', 'error');
+    }
+  };
+
+  const buildWhatsAppText = () => {
+    if (!submittedAttendance) return '';
+    const present = submittedAttendance.present || [];
+    const absent = submittedAttendance.absent || [];
+    const total = present.length + absent.length;
+    const last3 = (list) => list.map((p) => String(p.roll).slice(-3)).join(', ');
+
+    return (
+      `📋 *ATTENDANCE REPORT* 📋\n` +
+      `🏫 *College:* ${crData?.collegeName}\n` +
+      `📚 *Class:* ${crData?.branch} - Sec ${crData?.section} (${crData?.year})\n` +
+      `📅 *Date:* ${formatDate(submittedAttendance.date)}\n` +
+      `👨‍🏫 *TG:* ${crData?.tgName}\n\n` +
+      `✅ Present: ${present.length} / ${total}\n` +
+      `❌ Absent: ${absent.length} / ${total}\n\n` +
+      `*Absent Roll Nos*\n${absent.length ? last3(absent) : 'None 🎉'}\n\n` +
+      `*Present Roll Nos*\n${present.length ? last3(present) : 'None'}`
+    );
+  };
+
+  const copyWhatsAppText = async () => {
+    const text = buildWhatsAppText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Attendance text copied for WhatsApp!');
+    } catch {
+      showToast('Could not copy. Please allow clipboard access.', 'error');
+    }
+  };
+
+  const shareOnWhatsApp = () => {
+    const text = buildWhatsAppText();
+    if (!text) return;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+  };
+
+  // ---------- Derived data ----------
+  const sortedStudentsList = useMemo(
+    () => Object.entries(students).sort(byRoll),
+    [students]
   );
 
-  const presentCount = Object.values(attendance).filter(Boolean).length;
-  const totalCount = Object.keys(students).length;
+  const filteredMarkerList = useMemo(() => {
+    const q = studentSearch.trim().toLowerCase();
+    if (!q) return sortedStudentsList;
+    return sortedStudentsList.filter(
+      ([, s]) =>
+        s.name.toLowerCase().includes(q) || s.rollNumber.toLowerCase().includes(q)
+    );
+  }, [sortedStudentsList, studentSearch]);
 
+  // Per-student percentage across the saved records
+  const stats = useMemo(() => {
+    const m = {};
+    const bump = (roll, isPresent) => {
+      const k = normalizeRoll(roll);
+      if (!m[k]) m[k] = { present: 0, total: 0 };
+      m[k].total += 1;
+      if (isPresent) m[k].present += 1;
+    };
+    Object.values(history).forEach((rec) => {
+      (rec.present || []).forEach((p) => bump(p.roll, true));
+      (rec.absent || []).forEach((a) => bump(a.roll, false));
+    });
+    return m;
+  }, [history]);
+
+  const historyList = useMemo(
+    () =>
+      Object.entries(history)
+        .map(([dateKey, rec]) => ({ dateKey, rec }))
+        .sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1)),
+    [history]
+  );
+
+  const presentCount = Object.keys(students).filter((id) => attendance[id]).length;
+  const totalCount = Object.keys(students).length;
+  const isEditingExisting = !!history[markedDate];
+
+  const dismissedKey = 'dismissedAnnouncement';
+  const [dismissedTs, setDismissedTs] = useState(0);
+  useEffect(() => {
+    try {
+      setDismissedTs(Number(localStorage.getItem(dismissedKey)) || 0);
+    } catch {}
+  }, []);
+  const dismissAnnouncement = () => {
+    try {
+      localStorage.setItem(dismissedKey, String(announcement.timestamp));
+    } catch {}
+    setDismissedTs(announcement.timestamp);
+  };
+
+  // ---------- Render ----------
   if (loadingAuth) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
@@ -521,8 +730,39 @@ export default function Home() {
     );
   }
 
+  const showAnnouncement =
+    announcement?.message && announcement.timestamp > dismissedTs;
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
+      {/* Toast */}
+      {toast && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-sm w-[90%] px-4 py-3 rounded-xl text-sm font-semibold shadow-2xl border ${
+            toast.type === 'error'
+              ? 'bg-rose-950 text-rose-200 border-rose-500/50'
+              : 'bg-emerald-950 text-emerald-200 border-emerald-500/50'
+          }`}>
+          {toast.message}
+        </div>
+      )}
+
+      {/* Admin announcement */}
+      {showAnnouncement && (
+        <div className="max-w-4xl mx-auto bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4 mb-6 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-1">📢 Announcement</p>
+            <p className="text-sm text-amber-100 whitespace-pre-wrap">{announcement.message}</p>
+          </div>
+          <button
+            onClick={dismissAnnouncement}
+            className="text-amber-300 hover:text-white text-sm px-2"
+            aria-label="Dismiss announcement">
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -531,7 +771,7 @@ export default function Home() {
           </h1>
           {crData && (
             <p className="text-slate-400 text-sm mt-1">
-              <span className="text-slate-200 font-medium">{crData.crName}</span> (Roll: {crData.crRollNumber}) | {crData.collegeName} | {crData.branch} Sec {crData.section} | Year: {crData.year} | TG: {crData.tgName}
+              <span className="text-slate-200 font-medium">{crData.crName}</span>{crData.userId && <> <span className="font-mono text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded-full">ID: {crData.userId}</span></>} (Roll: {crData.crRollNumber}) | {crData.collegeName} | {crData.branch} Sec {crData.section} | Year: {crData.year} | TG: {crData.tgName}
             </p>
           )}
         </div>
@@ -542,7 +782,7 @@ export default function Home() {
             className="bg-amber-500/10 border border-amber-500/30 text-amber-400 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-amber-500 hover:text-slate-950 transition-all">
             {editingProfile ? '✕ Close' : '✏️ Edit'}
           </button>
-          {user?.email === MASTER_ADMIN_EMAIL && (
+          {user?.email && MASTER_ADMIN_EMAIL && user.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase() && (
             <button
               onClick={() => router.push('/admin')}
               className="bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-cyan-500 hover:text-slate-950 transition-all shadow-lg shadow-cyan-900/10">
@@ -640,6 +880,7 @@ export default function Home() {
             value={studentName}
             onChange={(e) => setStudentName(e.target.value)}
             required
+            maxLength={100}
             className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 flex-1 text-slate-100"
           />
           <input
@@ -648,22 +889,24 @@ export default function Home() {
             value={studentRoll}
             onChange={(e) => setStudentRoll(e.target.value)}
             required
+            maxLength={30}
             className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 sm:w-48 text-slate-100"
           />
-          <button type="submit" className={`px-6 py-3 rounded-xl text-sm font-semibold text-white transition-all shadow-lg ${editingStudentId ? 'bg-gradient-to-r from-amber-500 to-orange-600 shadow-orange-900/20 hover:opacity-90' : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-900/20 hover:opacity-90'}`}>
-            {editingStudentId ? 'Update' : 'Add'}
+          <button
+            type="submit"
+            disabled={studentSaving}
+            className={`px-6 py-3 rounded-xl text-sm font-semibold text-white transition-all shadow-lg disabled:opacity-50 ${editingStudentId ? 'bg-gradient-to-r from-amber-500 to-orange-600 shadow-orange-900/20 hover:opacity-90' : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-900/20 hover:opacity-90'}`}>
+            {studentSaving ? 'Saving...' : editingStudentId ? 'Update' : 'Add'}
           </button>
         </form>
       </div>
 
       {/* Bulk Upload Section */}
       {showBulkUpload && (
-        <div className="max-w-4xl mx-auto bg-gradient-to-br from-purple-950/40 to-slate-950 border-2 border-purple-500/50 rounded-2xl shadow-xl p-6 mb-6 animate-in fade-in duration-300">
+        <div className="max-w-4xl mx-auto bg-gradient-to-br from-purple-950/40 to-slate-950 border-2 border-purple-500/50 rounded-2xl shadow-xl p-6 mb-6">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-3 h-3 rounded-full bg-purple-400 animate-pulse"></div>
-            <h2 className="text-lg font-bold text-purple-300">
-              📥 Bulk Upload Students
-            </h2>
+            <h2 className="text-lg font-bold text-purple-300">📥 Bulk Upload Students</h2>
           </div>
 
           {/* Roll Range Generator Section */}
@@ -721,7 +964,10 @@ export default function Home() {
                   </div>
                 </div>
                 <p className="text-xs text-slate-400">
-                  📊 Preview: <span className="text-cyan-400 font-mono">{rollPrefix}{rangeStart}</span> → <span className="text-cyan-400 font-mono">{rollPrefix}{rangeEnd}</span> ({parseInt(rangeEnd) - parseInt(rangeStart) + 1} students)
+                  📊 Preview: <span className="text-cyan-400 font-mono">{rollPrefix}{rangeStart}</span> → <span className="text-cyan-400 font-mono">{rollPrefix}{rangeEnd}</span>
+                  {!isNaN(parseInt(rangeStart)) && !isNaN(parseInt(rangeEnd)) && parseInt(rangeEnd) >= parseInt(rangeStart) && (
+                    <> ({parseInt(rangeEnd) - parseInt(rangeStart) + 1} students)</>
+                  )}
                 </p>
               </div>
             )}
@@ -745,14 +991,10 @@ export default function Home() {
           {/* Validation Warnings/Status */}
           {duplicateWarnings.length > 0 && (
             <div className="mb-4 p-4 bg-slate-900 border border-slate-800 rounded-xl max-h-48 overflow-y-auto">
-              <p className="text-xs font-bold text-slate-300 mb-2">⚠️  Validation Report:</p>
+              <p className="text-xs font-bold text-slate-300 mb-2">⚠️ Validation Report:</p>
               <div className="space-y-1">
                 {duplicateWarnings.map((warning, idx) => (
-                  <p key={idx} className={`text-xs ${
-                    warning.includes('❌')
-                      ? 'text-rose-400'
-                      : 'text-amber-400'
-                  }`}>
+                  <p key={idx} className={`text-xs ${warning.includes('❌') ? 'text-rose-400' : 'text-amber-400'}`}>
                     {warning}
                   </p>
                 ))}
@@ -780,9 +1022,7 @@ export default function Home() {
                     Uploading...
                   </>
                 ) : (
-                  <>
-                    🚀 Upload All
-                  </>
+                  <>🚀 Upload All</>
                 )}
               </button>
             </div>
@@ -825,37 +1065,62 @@ export default function Home() {
       {/* Student List Display */}
       {sortedStudentsList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
-          <h2 className="text-lg font-semibold mb-4 text-slate-200">📚 Enrolled Students ({sortedStudentsList.length})</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <h2 className="text-lg font-semibold text-slate-200">📚 Enrolled Students ({sortedStudentsList.length})</h2>
+            <button
+              type="button"
+              onClick={handleClearAllStudents}
+              className="text-xs bg-rose-500/10 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded-lg hover:bg-rose-500 hover:text-white transition-all">
+              🗑 Clear All
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 mb-3">
+            Attendance % is calculated from the last {RETENTION_DAYS} days of saved records. Below {MIN_ATTENDANCE_PERCENT}% is flagged in red.
+          </p>
           <div className="overflow-x-auto max-h-80 overflow-y-auto border border-slate-800 rounded-xl">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs sticky top-0">
                   <th className="p-3">Roll Number</th>
                   <th className="p-3">Student Name</th>
+                  <th className="p-3">Attendance</th>
                   <th className="p-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-sm">
-                {sortedStudentsList.map(([id, s]) => (
-                  <tr key={id} className={`transition-colors ${editingStudentId === id ? 'bg-amber-500/10 border-l-4 border-amber-500' : 'hover:bg-slate-950/40'}`}>
-                    <td className="p-3 font-semibold text-cyan-400">{s.rollNumber}</td>
-                    <td className="p-3 text-slate-300">{s.name}</td>
-                    <td className="p-3 text-right space-x-2">
-                      <button
-                        type="button"
-                        onClick={() => handleEditClick(id, s)}
-                        className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-cyan-500 hover:text-slate-950 transition-all cursor-pointer">
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteStudent(id)}
-                        className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-rose-500 hover:text-white transition-all cursor-pointer">
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {sortedStudentsList.map(([id, s]) => {
+                  const st = stats[normalizeRoll(s.rollNumber)];
+                  const pct = st && st.total > 0 ? Math.round((st.present / st.total) * 100) : null;
+                  return (
+                    <tr key={id} className={`transition-colors ${editingStudentId === id ? 'bg-amber-500/10 border-l-4 border-amber-500' : 'hover:bg-slate-950/40'}`}>
+                      <td className="p-3 font-semibold text-cyan-400">{s.rollNumber}</td>
+                      <td className="p-3 text-slate-300">{s.name}</td>
+                      <td className="p-3 text-xs">
+                        {pct === null ? (
+                          <span className="text-slate-600">—</span>
+                        ) : (
+                          <span className={`font-semibold ${pct < MIN_ATTENDANCE_PERCENT ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            {pct}% <span className="text-slate-500 font-normal">({st.present}/{st.total})</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right space-x-2 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => handleEditClick(id, s)}
+                          className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-cyan-500 hover:text-slate-950 transition-all cursor-pointer">
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteStudent(id)}
+                          className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-rose-500 hover:text-white transition-all cursor-pointer">
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -868,7 +1133,6 @@ export default function Home() {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
             <div className="flex flex-wrap items-center gap-3">
               <h2 className="text-lg font-semibold text-slate-200">✓ Mark Attendance</h2>
-              {/* Single Toggle Button for Mark All / Unmark All */}
               <button
                 type="button"
                 onClick={handleToggleAllAttendance}
@@ -884,18 +1148,38 @@ export default function Home() {
               </span>
             </div>
 
-            <input
-              type="date"
-              value={markedDate}
-              min={todayStr}
-              max={todayStr}
-              onChange={(e) => setMarkedDate(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-200"
-            />
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-cyan-400 font-mono">{formatDate(markedDate)}</span>
+              <input
+                type="date"
+                value={markedDate}
+                min={oldestStr}
+                max={todayStr}
+                onChange={(e) => handleDateChange(e.target.value)}
+                className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-200"
+              />
+            </div>
           </div>
 
+          {isEditingExisting && (
+            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 mb-3">
+              ✏️ Attendance for {formatDate(markedDate)} is already saved. Saving again will overwrite it.
+            </p>
+          )}
+
+          <input
+            type="text"
+            placeholder="🔍 Search student by name or roll..."
+            value={studentSearch}
+            onChange={(e) => setStudentSearch(e.target.value)}
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500 mb-3"
+          />
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto mb-4 border border-slate-800/80 p-4 rounded-xl bg-slate-950/50">
-            {sortedStudentsList.map(([id, s]) => (
+            {filteredMarkerList.length === 0 && (
+              <p className="text-xs text-slate-500 col-span-full text-center py-2">No students match your search.</p>
+            )}
+            {filteredMarkerList.map(([id, s]) => (
               <label
                 key={id}
                 className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border ${
@@ -916,9 +1200,49 @@ export default function Home() {
             ))}
           </div>
 
-          <button onClick={submitAttendance} className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 transition-all shadow-lg shadow-cyan-900/20">
-            💾 Save Attendance
+          <button
+            onClick={submitAttendance}
+            disabled={savingAttendance}
+            className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 transition-all shadow-lg shadow-cyan-900/20">
+            {savingAttendance ? 'Saving...' : isEditingExisting ? '💾 Update Attendance' : '💾 Save Attendance'}
           </button>
+        </div>
+      )}
+
+      {/* History */}
+      {historyList.length > 0 && (
+        <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
+          <h2 className="text-lg font-semibold text-slate-200 mb-1">🗓 Saved Records</h2>
+          <p className="text-xs text-slate-500 mb-4">
+            Records are kept for {RETENTION_DAYS} days. Tap a date to view or edit it.
+          </p>
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {historyList.map(({ dateKey, rec }) => {
+              const p = (rec.present || []).length;
+              const a = (rec.absent || []).length;
+              const active = dateKey === markedDate;
+              return (
+                <div
+                  key={dateKey}
+                  className={`flex items-center justify-between gap-2 border rounded-xl px-3 py-2 text-sm ${active ? 'border-cyan-500/60 bg-cyan-500/10' : 'border-slate-800 bg-slate-950/50'}`}>
+                  <button
+                    type="button"
+                    onClick={() => handleDateChange(dateKey)}
+                    className="flex-1 text-left flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span className="font-semibold text-slate-200">{formatDate(dateKey)}</span>
+                    <span className="text-emerald-400 text-xs">Present: {p}</span>
+                    <span className="text-rose-400 text-xs">Absent: {a}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRecord(dateKey)}
+                    className="text-xs text-rose-400 hover:text-white hover:bg-rose-500 border border-rose-500/30 px-2 py-1 rounded-lg transition-all">
+                    Delete
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -926,33 +1250,30 @@ export default function Home() {
       {submittedAttendance && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-cyan-500/30 rounded-2xl shadow-xl p-6 mb-6">
           <div className="text-center mb-5">
-            <h3 className="text-lg font-bold text-cyan-400 mb-1">✅ Attendance Recorded Successfully!</h3>
+            <h3 className="text-lg font-bold text-cyan-400 mb-1">✅ Attendance Recorded</h3>
             <p className="text-xs text-slate-400">
-              {submittedAttendance.date} • Saved and set to expire automatically in 48 hours.
+              {formatDate(submittedAttendance.date)} • Kept for {RETENTION_DAYS} days.
             </p>
           </div>
 
-          {/* Summary */}
           <div className="grid grid-cols-2 gap-3 mb-5">
             <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-xl p-3 text-center">
-              <p className="text-2xl font-extrabold text-emerald-400">{submittedAttendance.present.length}</p>
+              <p className="text-2xl font-extrabold text-emerald-400">{(submittedAttendance.present || []).length}</p>
               <p className="text-xs text-emerald-300 font-semibold">Present</p>
             </div>
             <div className="bg-rose-500/15 border border-rose-500/40 rounded-xl p-3 text-center">
-              <p className="text-2xl font-extrabold text-rose-400">{submittedAttendance.absent.length}</p>
+              <p className="text-2xl font-extrabold text-rose-400">{(submittedAttendance.absent || []).length}</p>
               <p className="text-xs text-rose-300 font-semibold">Absent</p>
             </div>
           </div>
 
-          {/* Present & Absent lists */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            {/* Present */}
             <div className="border border-emerald-500/40 rounded-xl overflow-hidden">
               <div className="bg-emerald-600 text-white text-sm font-bold px-4 py-2">
-                Present ({submittedAttendance.present.length})
+                Present ({(submittedAttendance.present || []).length})
               </div>
               <div className="max-h-64 overflow-y-auto divide-y divide-emerald-900/40">
-                {submittedAttendance.present.length === 0 ? (
+                {(submittedAttendance.present || []).length === 0 ? (
                   <p className="p-3 text-xs text-slate-400">No present students</p>
                 ) : (
                   submittedAttendance.present.map((p, idx) => (
@@ -964,13 +1285,12 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Absent */}
             <div className="border border-rose-500/40 rounded-xl overflow-hidden">
               <div className="bg-rose-600 text-white text-sm font-bold px-4 py-2">
-                Absent ({submittedAttendance.absent.length})
+                Absent ({(submittedAttendance.absent || []).length})
               </div>
               <div className="max-h-64 overflow-y-auto divide-y divide-rose-900/40">
-                {submittedAttendance.absent.length === 0 ? (
+                {(submittedAttendance.absent || []).length === 0 ? (
                   <p className="p-3 text-xs text-slate-400">No absent students 🎉</p>
                 ) : (
                   submittedAttendance.absent.map((a, idx) => (
@@ -983,13 +1303,15 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Download buttons */}
           <div className="flex flex-col sm:flex-row justify-center gap-3">
             <button onClick={downloadFullJPG} className="bg-purple-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-purple-500 transition-all shadow-lg shadow-purple-900/20">
               🖼️ Download Present + Absent (JPG)
             </button>
-            <button onClick={copyWhatsAppText} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-900/20">
-              💬 Copy WhatsApp Text
+            <button onClick={copyWhatsAppText} className="bg-slate-800 border border-slate-700 text-slate-100 px-6 py-3 rounded-xl text-sm font-semibold hover:bg-slate-700 transition-all">
+              📋 Copy Text
+            </button>
+            <button onClick={shareOnWhatsApp} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-sm font-semibold hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-900/20">
+              💬 Share on WhatsApp
             </button>
           </div>
         </div>
@@ -1003,25 +1325,24 @@ export default function Home() {
             Branch: {crData?.branch} | Sec: {crData?.section} | Year: {crData?.year} | TG: {crData?.tgName}
           </p>
           <hr style={{ border: '1px solid #e5e7eb', marginBottom: '20px' }} />
-          <h3 style={{ margin: '0 0 10px 0' }}>Attendance Report - {submittedAttendance?.date}</h3>
+          <h3 style={{ margin: '0 0 10px 0' }}>Attendance Report - {formatDate(submittedAttendance?.date)}</h3>
           <p style={{ margin: '4px 0' }}><strong>CR Name:</strong> {crData?.crName} ({crData?.crRollNumber})</p>
           <p style={{ margin: '4px 0 16px 0' }}>
-            <strong>Present:</strong> <span style={{ color: '#15803d', fontWeight: 'bold' }}>{submittedAttendance?.present.length}</span>
+            <strong>Present:</strong> <span style={{ color: '#15803d', fontWeight: 'bold' }}>{(submittedAttendance?.present || []).length}</span>
             {'  |  '}
-            <strong>Absent:</strong> <span style={{ color: '#b91c1c', fontWeight: 'bold' }}>{submittedAttendance?.absent.length}</span>
+            <strong>Absent:</strong> <span style={{ color: '#b91c1c', fontWeight: 'bold' }}>{(submittedAttendance?.absent || []).length}</span>
             {'  |  '}
-            <strong>Total:</strong> {Object.keys(students).length}
+            <strong>Total:</strong> {(submittedAttendance?.present || []).length + (submittedAttendance?.absent || []).length}
           </p>
 
-          {/* Present - green */}
           <div style={{ background: '#dcfce7', border: '2px solid #16a34a', borderRadius: '8px', padding: '15px', marginBottom: '16px' }}>
             <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', color: '#166534', fontSize: '16px' }}>
-              Present Students ({submittedAttendance?.present.length})
+              Present Students ({(submittedAttendance?.present || []).length})
             </p>
-            {submittedAttendance?.present.length === 0 ? (
+            {(submittedAttendance?.present || []).length === 0 ? (
               <p style={{ margin: 0, fontSize: '14px', color: '#166534' }}>None</p>
             ) : (
-              submittedAttendance?.present.map((p, idx) => (
+              submittedAttendance.present.map((p, idx) => (
                 <div key={idx} style={{ fontSize: '14px', color: '#14532d', padding: '4px 0', borderBottom: '1px solid #bbf7d0' }}>
                   {idx + 1}. {p.roll} - {p.name}
                 </div>
@@ -1029,15 +1350,14 @@ export default function Home() {
             )}
           </div>
 
-          {/* Absent - red */}
           <div style={{ background: '#fee2e2', border: '2px solid #dc2626', borderRadius: '8px', padding: '15px' }}>
             <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', color: '#991b1b', fontSize: '16px' }}>
-              Absent Students ({submittedAttendance?.absent.length})
+              Absent Students ({(submittedAttendance?.absent || []).length})
             </p>
-            {submittedAttendance?.absent.length === 0 ? (
+            {(submittedAttendance?.absent || []).length === 0 ? (
               <p style={{ margin: 0, fontSize: '14px', color: '#991b1b' }}>None</p>
             ) : (
-              submittedAttendance?.absent.map((a, idx) => (
+              submittedAttendance.absent.map((a, idx) => (
                 <div key={idx} style={{ fontSize: '14px', color: '#7f1d1d', padding: '4px 0', borderBottom: '1px solid #fecaca' }}>
                   {idx + 1}. {a.roll} - {a.name}
                 </div>
