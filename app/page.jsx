@@ -6,7 +6,7 @@ import { ref, set, get, child, push, update, remove } from 'firebase/database';
 import { useRouter } from 'next/navigation';
 import html2canvas from 'html2canvas';
 import { getLocalDate, shiftDate, normalizeRoll, formatDate, formatDateForFile } from '@/lib/dateUtils';
-import { RETENTION_DAYS, MIN_ATTENDANCE_PERCENT } from '@/lib/config';
+import { RETENTION_DAYS, MIN_ATTENDANCE_PERCENT, MAX_SEMESTER } from '@/lib/config';
 import { ensureUserId } from '@/lib/userId';
 
 // Build the { studentId: true/false } map for a date from a saved record.
@@ -16,7 +16,7 @@ const buildAttendanceFor = (studentsObj, record) => {
   const absentRolls = new Set(
     (record?.absent || []).map((a) => normalizeRoll(a.roll))
   );
-  Object.entries(studentsObj).forEach(([id, s]) => {
+  Object.entries(studentsObj || {}).forEach(([id, s]) => {
     result[id] = !absentRolls.has(normalizeRoll(s.rollNumber));
   });
   return result;
@@ -25,12 +25,24 @@ const buildAttendanceFor = (studentsObj, record) => {
 const byRoll = (a, b) =>
   a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true });
 
+const semesterOptions = Array.from({ length: MAX_SEMESTER }, (_, i) => i + 1);
+
 export default function Home() {
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [crData, setCrData] = useState(null);
   const [hasProfile, setHasProfile] = useState(false);
+
+  // Selected semester (1-8): applies to attendance marking + history only.
+  // The student roster is shared across ALL semesters.
+  const [semester, setSemester] = useState(1);
+
+  // ONE shared roster
   const [students, setStudents] = useState({});
+
+  // Per-semester attendance history: { [semester]: { 'YYYY-MM-DD': record } }
+  const [historyTree, setHistoryTree] = useState({});
+
   const [studentName, setStudentName] = useState('');
   const [studentRoll, setStudentRoll] = useState('');
   const [studentSaving, setStudentSaving] = useState(false);
@@ -47,10 +59,11 @@ export default function Home() {
   // Announcement from admin
   const [announcement, setAnnouncement] = useState(null);
 
-  // Edit profile (TG name / Year) state
+  // Edit profile state
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileTg, setProfileTg] = useState('');
-  const [profileYear, setProfileYear] = useState('');
+  // const [profileYear, setProfileYear] = useState('');
+  const [profileSem, setProfileSem] = useState(1);
   const [profileSaving, setProfileSaving] = useState(false);
 
   // Edit student state
@@ -78,11 +91,16 @@ export default function Home() {
   const [attendance, setAttendance] = useState({});
   const [markedDate, setMarkedDate] = useState(todayStr);
   const [submittedAttendance, setSubmittedAttendance] = useState(null);
-  const [history, setHistory] = useState({}); // { 'YYYY-MM-DD': record }
   const [savingAttendance, setSavingAttendance] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
   const exportFullRef = useRef(null);
   const router = useRouter();
+
+  // Attendance history of the currently selected semester
+  const history = useMemo(
+    () => historyTree[semester] || {},
+    [historyTree, semester]
+  );
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -101,7 +119,6 @@ export default function Home() {
         // CR profile
         const crSnap = await get(child(dbRef, `users/${currentUser.uid}`));
         if (!crSnap.exists() || !crSnap.val().tgName) {
-          // Signed in but registration not completed -> finish registration
           setHasProfile(false);
           setLoadingAuth(false);
           router.push('/register');
@@ -110,7 +127,6 @@ export default function Home() {
 
         setHasProfile(true);
         let profile = crSnap.val();
-        // Older accounts get their unique ID on first login after this update
         if (!profile.userId) {
           try {
             const newId = await ensureUserId(currentUser.uid);
@@ -120,6 +136,19 @@ export default function Home() {
           }
         }
         setCrData(profile);
+
+        // Starting semester: saved preference -> profile default -> 1
+        let initialSem;
+        try {
+          const stored = Number(localStorage.getItem('ms_semester')) || 0;
+          if (stored >= 1 && stored <= MAX_SEMESTER) initialSem = stored;
+        } catch {}
+        if (!initialSem) {
+          initialSem =
+            Number(profile.semester) >= 1 && Number(profile.semester) <= MAX_SEMESTER
+              ? Number(profile.semester)
+              : 1;
+        }
         setLoadingAuth(false);
 
         // Students + attendance + announcement in parallel
@@ -129,27 +158,60 @@ export default function Home() {
           get(child(dbRef, 'announcements/global')).catch(() => null),
         ]);
 
-        const fetchedStudents = studentsSnap.exists() ? studentsSnap.val() : {};
-        const hist = attSnap.exists() ? { ...attSnap.val() } : {};
+        let rawStudents = studentsSnap.exists() ? studentsSnap.val() : {};
+        const rawAtt = attSnap.exists() ? attSnap.val() : {};
 
-        // Cleanup records older than the retention window (one multi-path write)
-        const cutoff = shiftDate(getLocalDate(), -(RETENTION_DAYS - 1));
-        const expired = Object.keys(hist).filter((k) => k < cutoff);
-        if (expired.length > 0) {
-          const updates = {};
-          expired.forEach((k) => {
-            updates[`attendance/${currentUser.uid}/${k}`] = null;
-            delete hist[k];
+        // ---- One-time fix-up: if an intermediate build stored the roster
+        // semester-wise (sem1..sem8), flatten it back to one shared roster ----
+        const semChildren = Object.keys(rawStudents).some((k) =>
+          /^sem[1-8]$/.test(k)
+        );
+        if (semChildren) {
+          const merged = {};
+          Object.entries(rawStudents).forEach(([k, v]) => {
+            if (/^sem[1-8]$/.test(k) && v && typeof v === 'object') {
+              Object.entries(v).forEach(([sid, s]) => {
+                if (!merged[sid]) merged[sid] = s;
+              });
+            } else if (v && v.name) {
+              merged[k] = v; // already-flat entries (legacy)
+            }
           });
+          // Single write replaces the whole node: removes sem children, writes flat roster
+          await set(ref(db, `students/${currentUser.uid}`), merged);
+          rawStudents = merged;
+        }
+
+        // Organize attendance into per-semester tree + apply 6-month cleanup
+        const cutoff = shiftDate(getLocalDate(), -(RETENTION_DAYS - 1));
+        const updates = {};
+        const hist = {};
+        Object.entries(rawAtt).forEach(([semKeyStr, recs]) => {
+          const semNum = Math.min(
+            Math.max(parseInt(String(semKeyStr).replace('sem', ''), 10) || 1, 1),
+            MAX_SEMESTER
+          );
+          const kept = {};
+          Object.entries(recs || {}).forEach(([k, v]) => {
+            if (k < cutoff) {
+              updates[`attendance/${currentUser.uid}/${semKeyStr}/${k}`] = null;
+            } else {
+              kept[k] = v;
+            }
+          });
+          hist[semNum] = kept;
+        });
+        if (Object.keys(updates).length) {
           update(ref(db), updates).catch((e) => console.error('Cleanup failed', e));
         }
 
-        setStudents(fetchedStudents);
-        setHistory(hist);
+        setStudents(rawStudents);
+        setHistoryTree(hist);
+        setSemester(initialSem);
 
-        // Load today's saved record (if any) so a refresh doesn't lose it
-        const todayRecord = hist[getLocalDate()] || null;
-        setAttendance(buildAttendanceFor(fetchedStudents, todayRecord));
+        // Load the selected date's saved record (if any) so a refresh doesn't lose it
+        const todayRecord = (hist[initialSem] || {})[getLocalDate()] || null;
+        setAttendance(buildAttendanceFor(rawStudents, todayRecord));
         setSubmittedAttendance(todayRecord);
 
         if (annSnap && annSnap.exists()) setAnnouncement(annSnap.val());
@@ -163,17 +225,31 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
+  // ---------- Semester ----------
+  const selectSemester = (next) => {
+    if (!next || next < 1 || next > MAX_SEMESTER) return;
+    setSemester(next);
+    try {
+      localStorage.setItem('ms_semester', String(next));
+    } catch {}
+    const rec = (historyTree[next] || {})[markedDate] || null;
+    setAttendance(buildAttendanceFor(students, rec));
+    setSubmittedAttendance(rec);
+    setStudentSearch('');
+  };
+
   // ---------- Profile ----------
   const startEditProfile = () => {
     setProfileTg(crData?.tgName || '');
-    setProfileYear(crData?.year || '');
+    // setProfileYear(crData?.year || '');
+    setProfileSem(crData?.semester || semester);
     setEditingProfile(true);
   };
 
   const cancelEditProfile = () => {
     setEditingProfile(false);
     setProfileTg('');
-    setProfileYear('');
+    // setProfileYear('');
   };
 
   const saveProfile = async (e) => {
@@ -181,19 +257,22 @@ export default function Home() {
     if (!user || !hasProfile) return;
 
     const tgName = profileTg.trim();
-    const year = profileYear.trim();
+    // const year = profileYear.trim();
+    const sem = Number(profileSem);
 
-    if (!tgName || !year) {
-      showToast('TG Name and Year cannot be empty!', 'error');
+    if (!tgName) {
+      showToast('TG Name cannot be empty!', 'error');
       return;
     }
 
     setProfileSaving(true);
     try {
-      await update(ref(db, `users/${user.uid}`), { tgName, year });
-      setCrData((prev) => ({ ...prev, tgName, year }));
+      // semester here = the CR's DEFAULT semester (auto-selected on next login)
+      await update(ref(db, `users/${user.uid}`), { tgName, semester: sem });
+      setCrData((prev) => ({ ...prev, tgName, semester: sem }));
+      selectSemester(sem); // apply immediately + remember in localStorage
       setEditingProfile(false);
-      showToast('Profile updated successfully!');
+      showToast(`Profile updated. Default semester set to ${sem}.`);
     } catch (error) {
       console.error(error);
       showToast('Error updating profile. Please try again.', 'error');
@@ -202,7 +281,7 @@ export default function Home() {
     }
   };
 
-  // ---------- Students ----------
+  // ---------- Students (ONE shared roster, used by every semester) ----------
   const handleAddOrUpdateStudent = async (e) => {
     e.preventDefault();
     if (!user || !hasProfile) {
@@ -247,7 +326,7 @@ export default function Home() {
           [newStudentRef.key]: { name, rollNumber: roll },
         }));
         setAttendance((prev) => ({ ...prev, [newStudentRef.key]: true }));
-        showToast('Student added.');
+        showToast('Student added. Usable in every semester.');
       }
       setStudentName('');
       setStudentRoll('');
@@ -273,7 +352,7 @@ export default function Home() {
   };
 
   const handleDeleteStudent = async (id) => {
-    if (!confirm('Are you sure you want to remove this student from your list?')) return;
+    if (!confirm('Remove this student from your list? Semester attendance already saved for them stays in the records.')) return;
     try {
       await remove(ref(db, `students/${user.uid}/${id}`));
       setStudents((prev) => {
@@ -294,12 +373,12 @@ export default function Home() {
     }
   };
 
-  // Clear the whole class (new semester)
+  // Clear the whole roster (new batch / fresh start)
   const handleClearAllStudents = async () => {
     if (Object.keys(students).length === 0) return;
     if (
       !confirm(
-        'Remove ALL students from your list? Saved attendance records are kept. This cannot be undone.'
+        'Remove ALL students from your list? Saved attendance records of every semester are kept. This cannot be undone.'
       )
     )
       return;
@@ -521,7 +600,7 @@ export default function Home() {
     const existing = history[markedDate];
     if (
       existing &&
-      !confirm(`Attendance for ${formatDate(markedDate)} is already saved. Overwrite it?`)
+      !confirm(`Attendance for Semester ${semester}, ${formatDate(markedDate)} is already saved. Overwrite it?`)
     ) {
       return;
     }
@@ -538,6 +617,7 @@ export default function Home() {
 
     const attendanceRecord = {
       date: markedDate,
+      semester: semester,
       timestamp: Date.now(),
       present: presentList,
       absent: absentList,
@@ -545,11 +625,17 @@ export default function Home() {
 
     setSavingAttendance(true);
     try {
-      await set(ref(db, `attendance/${user.uid}/${markedDate}`), attendanceRecord);
-      setHistory((prev) => ({ ...prev, [markedDate]: attendanceRecord }));
+      await set(
+        ref(db, `attendance/${user.uid}/sem${semester}/${markedDate}`),
+        attendanceRecord
+      );
+      setHistoryTree((prev) => ({
+        ...prev,
+        [semester]: { ...(prev[semester] || {}), [markedDate]: attendanceRecord },
+      }));
       setSubmittedAttendance(attendanceRecord);
       showToast(
-        `Saved ${formatDate(markedDate)}: ${presentList.length} present, ${absentList.length} absent.`
+        `Saved Sem ${semester}, ${formatDate(markedDate)}: ${presentList.length} present, ${absentList.length} absent.`
       );
     } catch (error) {
       console.error(error);
@@ -560,13 +646,13 @@ export default function Home() {
   };
 
   const handleDeleteRecord = async (dateKey) => {
-    if (!confirm(`Delete the saved attendance for ${formatDate(dateKey)}?`)) return;
+    if (!confirm(`Delete the saved attendance of Semester ${semester} for ${formatDate(dateKey)}?`)) return;
     try {
-      await remove(ref(db, `attendance/${user.uid}/${dateKey}`));
-      setHistory((prev) => {
-        const updated = { ...prev };
-        delete updated[dateKey];
-        return updated;
+      await remove(ref(db, `attendance/${user.uid}/sem${semester}/${dateKey}`));
+      setHistoryTree((prev) => {
+        const sem = { ...(prev[semester] || {}) };
+        delete sem[dateKey];
+        return { ...prev, [semester]: sem };
       });
       if (markedDate === dateKey) {
         setSubmittedAttendance(null);
@@ -591,7 +677,7 @@ export default function Home() {
       const link = document.createElement('a');
       link.href = image;
       const crRoll = crData?.crRollNumber || 'CR';
-      link.download = `Attendance_Full_${crRoll}_${formatDateForFile(submittedAttendance.date)}.jpg`;
+      link.download = `Attendance_Sem${submittedAttendance.semester || semester}_${crRoll}_${formatDateForFile(submittedAttendance.date)}.jpg`;
       link.click();
     } catch (error) {
       console.error(error);
@@ -605,11 +691,12 @@ export default function Home() {
     const absent = submittedAttendance.absent || [];
     const total = present.length + absent.length;
     const last3 = (list) => list.map((p) => String(p.roll).slice(-3)).join(', ');
+    const sem = submittedAttendance.semester || semester;
 
     return (
       `📋 *ATTENDANCE REPORT* 📋\n` +
       `🏫 *College:* ${crData?.collegeName}\n` +
-      `📚 *Class:* ${crData?.branch} - Sec ${crData?.section} (${crData?.year})\n` +
+      `📚 *Class:* ${crData?.branch} - Sec ${crData?.section} (Semester ${sem})\n` +
       `📅 *Date:* ${formatDate(submittedAttendance.date)}\n` +
       `👨‍🏫 *TG:* ${crData?.tgName}\n\n` +
       `✅ Present: ${present.length} / ${total}\n` +
@@ -651,7 +738,7 @@ export default function Home() {
     );
   }, [sortedStudentsList, studentSearch]);
 
-  // Per-student percentage across the saved records
+  // Per-student percentage across the saved records of the selected semester
   const stats = useMemo(() => {
     const m = {};
     const bump = (roll, isPresent) => {
@@ -674,6 +761,31 @@ export default function Home() {
         .sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1)),
     [history]
   );
+
+  // Semester-wise progress (per-semester attendance %), shared roster shown once
+  const semesterProgress = useMemo(() => {
+    const rows = [];
+    for (let s = 1; s <= MAX_SEMESTER; s++) {
+      const semHist = historyTree[s] || {};
+      const recordCount = Object.keys(semHist).length;
+      if (recordCount === 0) continue;
+
+      let present = 0;
+      let total = 0;
+      Object.values(semHist).forEach((rec) => {
+        (rec.present || []).forEach(() => present++);
+        total += (rec.present || []).length + (rec.absent || []).length;
+      });
+      rows.push({
+        sem: s,
+        records: recordCount,
+        present,
+        total,
+        pct: total > 0 ? Math.round((present / total) * 100) : null,
+      });
+    }
+    return rows;
+  }, [historyTree]);
 
   const presentCount = Object.keys(students).filter((id) => attendance[id]).length;
   const totalCount = Object.keys(students).length;
@@ -771,12 +883,32 @@ export default function Home() {
           </h1>
           {crData && (
             <p className="text-slate-400 text-sm mt-1">
-              <span className="text-slate-200 font-medium">{crData.crName}</span>{crData.userId && <> <span className="font-mono text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded-full">ID: {crData.userId}</span></>} (Roll: {crData.crRollNumber}) | {crData.collegeName} | {crData.branch} Sec {crData.section} | Year: {crData.year} | TG: {crData.tgName}
+              <span className="text-slate-200 font-medium">{crData.crName}</span>{crData.userId && <> <span className="font-mono text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded-full">ID: {crData.userId}</span></>} (Roll: {crData.crRollNumber}) | {crData.collegeName} | {crData.branch} Sec {crData.section} | TG: {crData.tgName}
             </p>
           )}
+          <p className="text-xs text-slate-500 mt-1">
+            📚 Student list is shared across all semesters — add each student once, then mark attendance semester-wise.
+          </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Semester selector (default saved per CR) */}
+          <div className="flex items-center gap-2 bg-slate-950 border border-cyan-500/40 rounded-xl px-3 py-2" title="Your default semester is set in Edit">
+            <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Semester</span>
+            <select
+              value={semester}
+              onChange={(e) => selectSemester(Number(e.target.value))}
+              className="bg-slate-950 text-cyan-300 text-sm font-semibold focus:outline-none cursor-pointer">
+              {semesterOptions.map((n) => (
+                <option key={n} value={n}>Semester {n}</option>
+              ))}
+            </select>
+            {crData?.semester === semester && (
+              <span className="text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-semibold">
+                Default
+              </span>
+            )}
+          </div>
           <button
             onClick={editingProfile ? cancelEditProfile : startEditProfile}
             className="bg-amber-500/10 border border-amber-500/30 text-amber-400 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-amber-500 hover:text-slate-950 transition-all">
@@ -797,7 +929,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Edit Profile (TG Name / Year) */}
+      {/* Edit Profile — includes the DEFAULT semester */}
       {editingProfile && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-amber-500/50 shadow-amber-500/10 rounded-2xl shadow-xl p-6 mb-6">
           <h2 className="text-lg font-semibold text-amber-400 flex items-center gap-2 mb-4">
@@ -816,7 +948,7 @@ export default function Home() {
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-amber-500 text-slate-100"
               />
             </div>
-            <div className="sm:w-48">
+            {/* <div className="sm:w-40">
               <label className="text-xs text-slate-400 block mb-1">Year</label>
               <input
                 type="text"
@@ -826,6 +958,17 @@ export default function Home() {
                 required
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-amber-500 text-slate-100"
               />
+            </div> */}
+            <div className="sm:w-44">
+              <label className="text-xs text-slate-400 block mb-1">Default Semester</label>
+              <select
+                value={profileSem}
+                onChange={(e) => setProfileSem(Number(e.target.value))}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-amber-500 text-slate-100">
+                {semesterOptions.map((n) => (
+                  <option key={n} value={n}>Semester {n}</option>
+                ))}
+              </select>
             </div>
             <div className="flex items-end gap-2">
               <button
@@ -845,7 +988,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* Add / Edit Student Section */}
+      {/* Add / Edit Student Section — ONE shared roster */}
       <div className={`max-w-4xl mx-auto bg-slate-900 border rounded-2xl shadow-xl p-6 mb-6 transition-all ${editingStudentId ? 'border-amber-500/50 shadow-amber-500/10' : 'border-slate-800'}`}>
         <div className="flex justify-between items-center mb-4">
           <h2 className={`text-lg font-semibold ${editingStudentId ? 'text-amber-400 flex items-center gap-2' : 'text-slate-200'}`}>
@@ -855,7 +998,7 @@ export default function Home() {
                 Editing Student Mode Active
               </>
             ) : (
-              'Add Single Student'
+              'Add Student (shared across all semesters)'
             )}
           </h2>
           <div className="flex gap-2">
@@ -1062,11 +1205,13 @@ export default function Home() {
         </div>
       )}
 
-      {/* Student List Display */}
+      {/* Student List Display (shared roster) */}
       {sortedStudentsList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-lg font-semibold text-slate-200">📚 Enrolled Students ({sortedStudentsList.length})</h2>
+            <h2 className="text-lg font-semibold text-slate-200">
+              📚 My Students ({sortedStudentsList.length}) — marking attendance for Semester {semester}
+            </h2>
             <button
               type="button"
               onClick={handleClearAllStudents}
@@ -1075,7 +1220,7 @@ export default function Home() {
             </button>
           </div>
           <p className="text-xs text-slate-500 mb-3">
-            Attendance % is calculated from the last {RETENTION_DAYS} days of saved records. Below {MIN_ATTENDANCE_PERCENT}% is flagged in red.
+            Attendance % below is for Semester {semester} only (records kept {RETENTION_DAYS} days ≈ 6 months per semester). Below {MIN_ATTENDANCE_PERCENT}% is flagged in red.
           </p>
           <div className="overflow-x-auto max-h-80 overflow-y-auto border border-slate-800 rounded-xl">
             <table className="w-full text-left border-collapse">
@@ -1083,7 +1228,7 @@ export default function Home() {
                 <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs sticky top-0">
                   <th className="p-3">Roll Number</th>
                   <th className="p-3">Student Name</th>
-                  <th className="p-3">Attendance</th>
+                  <th className="p-3">Sem {semester} Attendance</th>
                   <th className="p-3 text-right">Actions</th>
                 </tr>
               </thead>
@@ -1127,12 +1272,12 @@ export default function Home() {
         </div>
       )}
 
-      {/* Attendance Marking Section */}
+      {/* Attendance Marking Section (selected semester) */}
       {sortedStudentsList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
             <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-lg font-semibold text-slate-200">✓ Mark Attendance</h2>
+              <h2 className="text-lg font-semibold text-slate-200">✓ Mark Attendance — Semester {semester}</h2>
               <button
                 type="button"
                 onClick={handleToggleAllAttendance}
@@ -1163,7 +1308,7 @@ export default function Home() {
 
           {isEditingExisting && (
             <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 mb-3">
-              ✏️ Attendance for {formatDate(markedDate)} is already saved. Saving again will overwrite it.
+              ✏️ Attendance for Semester {semester}, {formatDate(markedDate)} is already saved. Saving again will overwrite it.
             </p>
           )}
 
@@ -1209,12 +1354,65 @@ export default function Home() {
         </div>
       )}
 
-      {/* History */}
+      {/* Semester-wise Progress */}
+      {semesterProgress.length > 0 && (
+        <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
+          <h2 className="text-lg font-semibold text-slate-200 mb-1">📊 Semester-wise Progress</h2>
+          <p className="text-xs text-slate-500 mb-4">
+            Overall attendance percentage per semester. Records are kept for {RETENTION_DAYS} days (6 months) per semester.
+          </p>
+          <div className="overflow-x-auto border border-slate-800 rounded-xl">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs">
+                  <th className="p-3">Semester</th>
+                  <th className="p-3">Saved Records</th>
+                  <th className="p-3">Present / Total</th>
+                  <th className="p-3">Attendance %</th>
+                  <th className="p-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 text-sm">
+                {semesterProgress.map((row) => (
+                  <tr key={row.sem} className={`hover:bg-slate-950/40 transition-colors ${row.sem === semester ? 'bg-cyan-500/5 border-l-4 border-cyan-500' : ''}`}>
+                    <td className="p-3 font-semibold text-cyan-400">Semester {row.sem}</td>
+                    <td className="p-3 text-slate-300">{row.records}</td>
+                    <td className="p-3 text-slate-300">{row.present} / {row.total}</td>
+                    <td className="p-3 text-xs">
+                      {row.pct === null ? (
+                        <span className="text-slate-600">No records yet</span>
+                      ) : (
+                        <span className={`font-semibold ${row.pct < MIN_ATTENDANCE_PERCENT ? 'text-rose-400' : 'text-emerald-400'}`}>
+                          {row.pct}%
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3 text-right">
+                      {row.sem === semester ? (
+                        <span className="text-xs text-cyan-400 font-semibold">Selected</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => selectSemester(row.sem)}
+                          className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-cyan-500 hover:text-slate-950 transition-all cursor-pointer">
+                          Open
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* History (selected semester) */}
       {historyList.length > 0 && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
-          <h2 className="text-lg font-semibold text-slate-200 mb-1">🗓 Saved Records</h2>
+          <h2 className="text-lg font-semibold text-slate-200 mb-1">🗓 Semester {semester} Records</h2>
           <p className="text-xs text-slate-500 mb-4">
-            Records are kept for {RETENTION_DAYS} days. Tap a date to view or edit it.
+            Records are kept for {RETENTION_DAYS} days (6 months). Tap a date to view or edit it.
           </p>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {historyList.map(({ dateKey, rec }) => {
@@ -1250,9 +1448,11 @@ export default function Home() {
       {submittedAttendance && (
         <div className="max-w-4xl mx-auto bg-slate-900 border border-cyan-500/30 rounded-2xl shadow-xl p-6 mb-6">
           <div className="text-center mb-5">
-            <h3 className="text-lg font-bold text-cyan-400 mb-1">✅ Attendance Recorded</h3>
+            <h3 className="text-lg font-bold text-cyan-400 mb-1">
+              ✅ Attendance Recorded — Semester {submittedAttendance.semester || semester}
+            </h3>
             <p className="text-xs text-slate-400">
-              {formatDate(submittedAttendance.date)} • Kept for {RETENTION_DAYS} days.
+              {formatDate(submittedAttendance.date)} • Kept for {RETENTION_DAYS} days (6 months).
             </p>
           </div>
 
@@ -1322,7 +1522,7 @@ export default function Home() {
         <div ref={exportFullRef} style={{ width: '700px', padding: '30px', background: '#ffffff', color: '#000000', fontFamily: 'Arial, sans-serif' }}>
           <h2 style={{ textAlign: 'center', color: '#1e3a8a', margin: '0 0 10px 0' }}>{crData?.collegeName}</h2>
           <p style={{ textAlign: 'center', fontSize: '14px', color: '#4b5563', margin: '0 0 20px 0' }}>
-            Branch: {crData?.branch} | Sec: {crData?.section} | Year: {crData?.year} | TG: {crData?.tgName}
+            Branch: {crData?.branch} | Sec: {crData?.section} | Semester: {submittedAttendance?.semester || semester} | TG: {crData?.tgName}
           </p>
           <hr style={{ border: '1px solid #e5e7eb', marginBottom: '20px' }} />
           <h3 style={{ margin: '0 0 10px 0' }}>Attendance Report - {formatDate(submittedAttendance?.date)}</h3>

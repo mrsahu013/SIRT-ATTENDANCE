@@ -10,6 +10,7 @@ import {
 } from "firebase/auth";
 import { ref, set, get, child } from "firebase/database";
 import { useRouter } from "next/navigation";
+import { MAX_SEMESTER } from "@/lib/config";
 import { ensureUserId } from "@/lib/userId";
 
 const friendlyError = (err) => {
@@ -30,6 +31,8 @@ const friendlyError = (err) => {
 const inputClass =
   "w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-200";
 
+const semesterOptions = Array.from({ length: MAX_SEMESTER }, (_, i) => i + 1);
+
 export default function Register() {
   const [email, setEmail] = useState("");
   const [emailLocked, setEmailLocked] = useState(false); // locked only for Google users
@@ -39,7 +42,8 @@ export default function Register() {
   const [collegeName, setCollegeName] = useState("");
   const [branch, setBranch] = useState("");
   const [section, setSection] = useState("");
-  const [year, setYear] = useState("");
+  // const [year, setYear] = useState("");
+  const [semester, setSemester] = useState(1);
   const [tgName, setTgName] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -103,7 +107,8 @@ export default function Register() {
         collegeName: collegeName.trim(),
         branch: branch.trim(),
         section: section.trim(),
-        year: year.trim(),
+        // year: year.trim(),
+        semester: Number(semester), // 1-8, used as the default semester on the dashboard
         tgName: tgName.trim(),
         email: user.email,
         uid: user.uid,
@@ -274,7 +279,7 @@ export default function Register() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div>
+              {/* <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">
                   Year
                 </label>
@@ -286,20 +291,37 @@ export default function Register() {
                   required
                   className={inputClass}
                 />
-              </div>
+              </div> */}
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Teacher Guardian (TG) Name
+                  Current Semester
                 </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Dr. Smith"
-                  value={tgName}
-                  onChange={(e) => setTgName(e.target.value)}
-                  required
+                <select
+                  value={semester}
+                  onChange={(e) => setSemester(Number(e.target.value))}
                   className={inputClass}
-                />
+                >
+                  {semesterOptions.map((n) => (
+                    <option key={n} value={n}>
+                      Semester {n}
+                    </option>
+                  ))}
+                </select>
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 mb-1">
+                Teacher Guardian (TG) Name
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Dr. Smith"
+                value={tgName}
+                onChange={(e) => setTgName(e.target.value)}
+                required
+                className={inputClass}
+              />
             </div>
           </div>
 

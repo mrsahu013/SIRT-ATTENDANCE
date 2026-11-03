@@ -5,7 +5,44 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { ref, get, child, remove, set, update } from "firebase/database";
 import { useRouter } from "next/navigation";
 import { getLocalDate, formatDate } from "@/lib/dateUtils";
-import { RETENTION_DAYS } from "@/lib/config";
+import { RETENTION_DAYS, MAX_SEMESTER } from "@/lib/config";
+
+// Flat shared roster per CR. Handles legacy / intermediate sem-nested data too.
+const rosterForCR = (studentsNode) => {
+  const node = studentsNode || {};
+  const out = [];
+  Object.entries(node).forEach(([sid, s]) => {
+    if (s && s.name) {
+      out.push([sid, s]);
+    } else if (/^sem[1-8]$/.test(sid) && s && typeof s === "object") {
+      // Intermediate format: merge sem children back into the flat list
+      Object.entries(s).forEach(([sid2, s2]) => {
+        if (s2 && s2.name) out.push([sid2, s2]);
+      });
+    }
+  });
+  return out;
+};
+
+const countStudentsForCR = (studentsNode) => rosterForCR(studentsNode).length;
+
+// Flat [{dateKey, sem, ...record}] list (newest first). Handles legacy flat records.
+const recordsForCR = (attNode) => {
+  const node = attNode || {};
+  const out = [];
+  Object.entries(node).forEach(([k, v]) => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(k)) {
+      // Legacy flat record -> Semester 1
+      out.push({ dateKey: k, sem: 1, ...(v || {}) });
+      return;
+    }
+    const semNum = parseInt(k.replace("sem", ""), 10) || 1;
+    Object.entries(v || {}).forEach(([dateKey, record]) => {
+      out.push({ dateKey, sem: semNum, ...(record || {}) });
+    });
+  });
+  return out.sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1));
+};
 
 export default function AdminDashboard() {
   const [adminUser, setAdminUser] = useState(null);
@@ -23,6 +60,7 @@ export default function AdminDashboard() {
   const [attSearch, setAttSearch] = useState("");
   const [attDateFilter, setAttDateFilter] = useState("");
   const [attStatusFilter, setAttStatusFilter] = useState("all"); // all | marked | notMarked
+  const [attSemFilter, setAttSemFilter] = useState("all"); // all | 1..8
   const [expandedCRs, setExpandedCRs] = useState({});
   const [expandedRecords, setExpandedRecords] = useState({});
   const [refreshing, setRefreshing] = useState(false);
@@ -174,10 +212,11 @@ export default function AdminDashboard() {
 
   const totalCRs = Object.keys(users).length;
 
+  // Total students across all CRs (shared rosters)
   let totalStudents = 0;
-  Object.values(studentsData).forEach((crStudents) => {
-    if (crStudents && typeof crStudents === "object") {
-      totalStudents += Object.keys(crStudents).length;
+  Object.values(studentsData).forEach((crNode) => {
+    if (crNode && typeof crNode === "object") {
+      totalStudents += countStudentsForCR(crNode);
     }
   });
 
@@ -194,15 +233,19 @@ export default function AdminDashboard() {
     );
   });
 
-  const markedTodayCount = Object.keys(users).filter(
-    (uid) => attendanceData[uid] && attendanceData[uid][todayStr],
+  // CRs who marked attendance today (any semester)
+  const markedTodayCount = Object.keys(users).filter((uid) =>
+    recordsForCR(attendanceData[uid]).some((r) => r.dateKey === todayStr),
   ).length;
+
+  const semOptions = Array.from({ length: MAX_SEMESTER }, (_, i) => i + 1);
 
   const attendanceRows = Object.entries(users)
     .map(([uid, cr]) => {
-      const records = Object.entries(attendanceData[uid] || {})
-        .map(([dateKey, record]) => ({ dateKey, ...record }))
-        .sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1)); // newest date first
+      let records = recordsForCR(attendanceData[uid]);
+      if (attSemFilter !== "all") {
+        records = records.filter((r) => r.sem === Number(attSemFilter));
+      }
       return { uid, cr, records };
     })
     .filter(({ cr, records }) => {
@@ -325,11 +368,15 @@ export default function AdminDashboard() {
               </div>
               <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl">
                 <p className="text-xs text-slate-400 font-medium uppercase tracking-wider mb-1">
-                  Active Database Nodes
+                  Record Retention
                 </p>
                 <h3 className="text-3xl font-extrabold text-indigo-400">
-                  Firebase RTDB
+                  {RETENTION_DAYS}
+                  <span className="text-lg text-slate-500"> days</span>
                 </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  6 months, semester-wise (1-8)
+                </p>
               </div>
             </div>
 
@@ -338,9 +385,10 @@ export default function AdminDashboard() {
                 Platform Status
               </h2>
               <p className="text-sm text-slate-400">
-                All services operational. Attendance records are kept for{" "}
-                {RETENTION_DAYS} days; older records are cleaned up when a CR
-                opens their dashboard.
+                All services operational. Student lists are shared per CR;
+                attendance is stored semester-wise (sem1&ndash;sem8) and kept
+                for {RETENTION_DAYS} days (6 months). Older records are cleaned
+                up when a CR opens their dashboard.
               </p>
             </div>
           </div>
@@ -370,8 +418,7 @@ export default function AdminDashboard() {
               </p>
             ) : (
               filteredCRs.map(([uid, cr]) => {
-                const crStudents = studentsData[uid] || {};
-                const studentList = Object.entries(crStudents);
+                const studentList = rosterForCR(studentsData[uid]);
 
                 return (
                   <div
@@ -380,13 +427,18 @@ export default function AdminDashboard() {
                   >
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-slate-800">
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h3 className="font-bold text-slate-100 text-base">
                             {cr.crName}
                           </h3>
                           <span className="bg-cyan-500/10 text-cyan-400 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-cyan-500/20">
                             CR • Roll: {cr.crRollNumber}
                           </span>
+                          {cr.semester && (
+                            <span className="bg-emerald-500/10 text-emerald-300 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+                              Default Sem {cr.semester}
+                            </span>
+                          )}
                           {cr.userId ? (
                             <button
                               type="button"
@@ -432,16 +484,14 @@ export default function AdminDashboard() {
                           {studentList.map(([studentId, student]) => (
                             <div
                               key={studentId}
-                              className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl text-xs flex justify-between items-center"
+                              className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl text-xs"
                             >
-                              <div>
-                                <p className="font-medium text-slate-200">
-                                  {student.name}
-                                </p>
-                                <p className="text-slate-400 text-[10px]">
-                                  Roll: {student.rollNumber}
-                                </p>
-                              </div>
+                              <p className="font-medium text-slate-200">
+                                {student.name}
+                              </p>
+                              <p className="text-slate-400 text-[10px]">
+                                Roll: {student.rollNumber}
+                              </p>
                             </div>
                           ))}
                         </div>
@@ -478,10 +528,10 @@ export default function AdminDashboard() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <input
                 type="text"
-                placeholder="🔍 Search User ID, CR, roll, college, TG..."
+                placeholder="🔍 Search CR, ID, roll, college..."
                 value={attSearch}
                 onChange={(e) => setAttSearch(e.target.value)}
                 className="bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500 transition-all"
@@ -502,6 +552,18 @@ export default function AdminDashboard() {
                   </button>
                 )}
               </div>
+              <select
+                value={attSemFilter}
+                onChange={(e) => setAttSemFilter(e.target.value)}
+                className="bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 transition-all"
+              >
+                <option value="all">All semesters</option>
+                {semOptions.map((n) => (
+                  <option key={n} value={String(n)}>
+                    Semester {n}
+                  </option>
+                ))}
+              </select>
               <select
                 value={attStatusFilter}
                 onChange={(e) => setAttStatusFilter(e.target.value)}
@@ -529,20 +591,13 @@ export default function AdminDashboard() {
               ) : (
                 attendanceRows.map(({ uid, cr, records }) => {
                   const isOpen = !!expandedCRs[uid];
-                  const markedToday = records.some(
+                  // "Marked today" is per-CR truth, independent of the semester filter
+                  const markedToday = recordsForCR(attendanceData[uid]).some(
                     (r) => r.dateKey === todayStr,
                   );
-                  const totalStudentsOfCR = Object.keys(
-                    studentsData[uid] || {},
-                  ).length;
-
-                  const visibleRecords = attDateFilter
-                    ? records.filter(
-                        (r) =>
-                          r.dateKey === attDateFilter ||
-                          r.date === attDateFilter,
-                      )
-                    : records;
+                  const totalStudentsOfCR = countStudentsForCR(
+                    studentsData[uid],
+                  );
 
                   return (
                     <div
@@ -596,15 +651,15 @@ export default function AdminDashboard() {
 
                       {isOpen && (
                         <div className="border-t border-slate-800 p-4 space-y-3">
-                          {visibleRecords.length === 0 ? (
+                          {records.length === 0 ? (
                             <p className="text-xs text-slate-500 italic">
                               {attDateFilter
                                 ? "No attendance marked on the selected date."
                                 : "This CR has not marked any attendance yet."}
                             </p>
                           ) : (
-                            visibleRecords.map((record) => {
-                              const key = `${uid}_${record.dateKey}`;
+                            records.map((record) => {
+                              const key = `${uid}_${record.sem}_${record.dateKey}`;
                               const recOpen = !!expandedRecords[key];
                               const presentList = record.present || [];
                               const absentList = record.absent || [];
@@ -627,13 +682,16 @@ export default function AdminDashboard() {
                                     onClick={() => toggleRecord(key)}
                                     className="w-full flex flex-wrap justify-between items-center gap-2 p-2.5 text-xs text-left hover:bg-slate-800/60 transition-all"
                                   >
-                                    <span className="text-slate-300 font-medium">
+                                    <span className="text-slate-300 font-medium flex items-center gap-2">
+                                      <span className="bg-purple-500/15 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-semibold">
+                                        Sem {record.sem}
+                                      </span>
                                       📅{" "}
                                       {formatDate(
                                         record.date || record.dateKey,
                                       )}
                                       {record.timestamp && (
-                                        <span className="text-slate-500 font-normal ml-2">
+                                        <span className="text-slate-500 font-normal">
                                           saved{" "}
                                           {new Date(
                                             record.timestamp,

@@ -11,6 +11,12 @@
         ".validate": "newData.hasChildren(['crName','crRollNumber','collegeName','branch','section','year','tgName'])",
         "userId": {
           ".validate": "newData.isString() && newData.val().matches(/^[0-9]{10}$/) && (!data.exists() || data.val() === newData.val())"
+        },
+        "semester": {
+          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 8"
+        },
+        "semMigrated": {
+          ".validate": "newData.isBoolean() && !data.exists()"
         }
       }
     },
@@ -31,8 +37,11 @@
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid",
-        "$date": {
-          ".validate": "$date.matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)"
+        "$sem": {
+          ".validate": "$sem.matches(/^sem[1-8]$/)",
+          "$date": {
+            ".validate": "$date.matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) && newData.hasChildren(['date','timestamp','present','absent'])"
+          }
         }
       }
     },
