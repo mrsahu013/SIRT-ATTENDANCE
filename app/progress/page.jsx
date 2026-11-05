@@ -1,54 +1,70 @@
 // app/progress/page.jsx
-'use client';
-import { useState, useMemo } from 'react';
-import { db } from '@/lib/firebase';
-import { ref, remove } from 'firebase/database';
-import { normalizeRoll, formatDate, getLocalDate, shiftDate } from '@/lib/dateUtils';
-import { RETENTION_DAYS, MIN_ATTENDANCE_PERCENT, MAX_SEMESTER } from '@/lib/config';
-import { useCRDashboard, useToast, authLoadingScreen } from '@/lib/useCRDashboard';
-import HeaderNav from '../components/HeaderNav';
-import Toast from '../components/Toast';
+"use client";
+import { useMemo } from "react";
+import { db } from "@/lib/firebase";
+import { ref, remove } from "firebase/database";
+import { normalizeRoll, formatDate } from "@/lib/dateUtils";
+import {
+  RETENTION_DAYS,
+  MIN_ATTENDANCE_PERCENT,
+  MAX_SEMESTER,
+} from "@/lib/config";
+import { byRoll } from "@/lib/sort";
+import {
+  useCRDashboard,
+  useToast,
+  authLoadingScreen,
+} from "@/lib/useCRDashboard";
+import AppShell from "../components/AppShell";
 
-const semesterOptions = Array.from({ length: MAX_SEMESTER }, (_, i) => i + 1);
+function Bar({ pct }) {
+  return (
+    <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+      <div
+        className={`h-full rounded-full ${pct < MIN_ATTENDANCE_PERCENT ? "bg-rose-500" : "bg-emerald-500"}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+const pctColor = (pct) =>
+  pct < MIN_ATTENDANCE_PERCENT ? "text-rose-400" : "text-emerald-400";
 
 export default function ProgressPage() {
   const {
     user,
     loadingAuth,
-    crData,
     students,
     historyTree,
     setHistoryTree,
     semester,
     selectSemester,
-    showAnnouncement,
-    announcement,
-    dismissAnnouncement,
   } = useCRDashboard();
   const { toast, showToast } = useToast();
 
-  const todayStr = getLocalDate();
-  const oldestStr = shiftDate(todayStr, -(RETENTION_DAYS - 1));
+  const history = useMemo(
+    () => historyTree[semester] || {},
+    [historyTree, semester],
+  );
 
-  const history = useMemo(() => historyTree[semester] || {}, [historyTree, semester]);
-
-  // Semester-wise overall progress
   const semesterProgress = useMemo(() => {
     const rows = [];
     for (let s = 1; s <= MAX_SEMESTER; s++) {
       const semHist = historyTree[s] || {};
-      const recordCount = Object.keys(semHist).length;
-      if (recordCount === 0) continue;
+      const records = Object.keys(semHist).length;
+      if (records === 0) continue;
 
       let present = 0;
       let total = 0;
       Object.values(semHist).forEach((rec) => {
-        (rec.present || []).forEach(() => present++);
-        total += (rec.present || []).length + (rec.absent || []).length;
+        const p = (rec.present || []).length;
+        present += p;
+        total += p + (rec.absent || []).length;
       });
       rows.push({
         sem: s,
-        records: recordCount,
+        records,
         present,
         total,
         pct: total > 0 ? Math.round((present / total) * 100) : null,
@@ -57,7 +73,6 @@ export default function ProgressPage() {
     return rows;
   }, [historyTree]);
 
-  // Per-student % for the selected semester
   const stats = useMemo(() => {
     const m = {};
     const bump = (roll, isPresent) => {
@@ -76,22 +91,22 @@ export default function ProgressPage() {
   const studentRows = useMemo(
     () =>
       Object.entries(students)
-        .sort(
-          (a, b) =>
-            a[1].rollNumber.localeCompare(b[1].rollNumber, undefined, { numeric: true })
-        )
+        .sort(byRoll)
         .map(([id, s]) => {
           const st = stats[normalizeRoll(s.rollNumber)];
           return {
             id,
             name: s.name,
             roll: s.rollNumber,
-            pct: st && st.total > 0 ? Math.round((st.present / st.total) * 100) : null,
+            pct:
+              st && st.total > 0
+                ? Math.round((st.present / st.total) * 100)
+                : null,
             present: st?.present || 0,
             total: st?.total || 0,
           };
         }),
-    [students, stats]
+    [students, stats],
   );
 
   const historyList = useMemo(
@@ -99,11 +114,16 @@ export default function ProgressPage() {
       Object.entries(history)
         .map(([dateKey, rec]) => ({ dateKey, rec }))
         .sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1)),
-    [history]
+    [history],
   );
 
   const handleDeleteRecord = async (dateKey) => {
-    if (!confirm(`Delete the saved attendance of Semester ${semester} for ${formatDate(dateKey)}?`)) return;
+    if (
+      !confirm(
+        `Delete the saved attendance of Semester ${semester} for ${formatDate(dateKey)}?`,
+      )
+    )
+      return;
     try {
       await remove(ref(db, `attendance/${user.uid}/sem${semester}/${dateKey}`));
       setHistoryTree((prev) => {
@@ -111,184 +131,158 @@ export default function ProgressPage() {
         delete sem[dateKey];
         return { ...prev, [semester]: sem };
       });
-      showToast('Record deleted.');
+      showToast("Record deleted.");
     } catch (error) {
       console.error(error);
-      showToast('Could not delete record.', 'error');
+      showToast("Could not delete record.", "error");
     }
   };
 
   if (loadingAuth) return authLoadingScreen;
-  if (!user) return null; // redirecting to /login
+  if (!user) return null;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
-      <Toast toast={toast} />
-
-      {/* Admin announcement */}
-      {showAnnouncement && (
-        <div className="max-w-4xl mx-auto bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4 mb-6 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-1">📢 Announcement</p>
-            <p className="text-sm text-amber-100 whitespace-pre-wrap">{announcement.message}</p>
-          </div>
-          <button onClick={dismissAnnouncement} className="text-amber-300 hover:text-white text-sm px-2" aria-label="Dismiss announcement">✕</button>
-        </div>
-      )}
-
-      <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">
-            Progress & Records
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Semester-wise attendance overview. Records are kept for {RETENTION_DAYS} days (6 months) per semester.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 bg-slate-950 border border-cyan-500/40 rounded-xl px-3 py-2" title="Your default semester is set in Profile">
-          <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Semester</span>
-          <select
-            value={semester}
-            onChange={(e) => selectSemester(Number(e.target.value))}
-            className="bg-slate-950 text-cyan-300 text-sm font-semibold focus:outline-none cursor-pointer">
-            {semesterOptions.map((n) => (
-              <option key={n} value={n}>Semester {n}</option>
-            ))}
-          </select>
-          {crData?.semester === semester && (
-            <span className="text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-semibold">
-              Default
-            </span>
-          )}
-        </div>
-      </div>
-
-      <HeaderNav active="/progress" />
-
-      {/* Semester-wise progress table */}
-      <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
-        <h2 className="text-lg font-semibold text-slate-200 mb-1">📊 Semester-wise Progress</h2>
-        <p className="text-xs text-slate-500 mb-4">
-          Overall attendance percentage per semester.
-        </p>
+    <AppShell
+      title="Progress & records"
+      subtitle={`Kept for ${RETENTION_DAYS} days per semester`}
+      toast={toast}
+      showSemester
+    >
+      {/* Semester overview */}
+      <section>
+        <h2 className="text-base sm:text-lg font-semibold text-slate-200 mb-3">
+          By semester
+        </h2>
         {semesterProgress.length === 0 ? (
-          <p className="text-sm text-slate-400 text-center py-6">
-            No attendance records yet. Save your first record from the Mark Attendance page.
-          </p>
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-sm text-slate-400">
+            No attendance saved yet. Mark and save attendance to see progress
+            here.
+          </div>
         ) : (
-          <div className="overflow-x-auto border border-slate-800 rounded-xl">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs">
-                  <th className="p-3">Semester</th>
-                  <th className="p-3">Saved Records</th>
-                  <th className="p-3">Present / Total</th>
-                  <th className="p-3">Attendance %</th>
-                  <th className="p-3 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 text-sm">
-                {semesterProgress.map((row) => (
-                  <tr key={row.sem} className={`hover:bg-slate-950/40 transition-colors ${row.sem === semester ? 'bg-cyan-500/5 border-l-4 border-cyan-500' : ''}`}>
-                    <td className="p-3 font-semibold text-cyan-400">Semester {row.sem}</td>
-                    <td className="p-3 text-slate-300">{row.records}</td>
-                    <td className="p-3 text-slate-300">{row.present} / {row.total}</td>
-                    <td className="p-3 text-xs">
-                      {row.pct === null ? (
-                        <span className="text-slate-600">No records yet</span>
-                      ) : (
-                        <span className={`font-semibold ${row.pct < MIN_ATTENDANCE_PERCENT ? 'text-rose-400' : 'text-emerald-400'}`}>
-                          {row.pct}%
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-3 text-right">
-                      {row.sem === semester ? (
-                        <span className="text-xs text-cyan-400 font-semibold">Selected</span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => selectSemester(row.sem)}
-                          className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-3 py-1 rounded-lg text-xs font-medium hover:bg-cyan-500 hover:text-slate-950 transition-all cursor-pointer">
-                          Open
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {semesterProgress.map((row) => {
+              const selected = row.sem === semester;
+              return (
+                <button
+                  key={row.sem}
+                  type="button"
+                  onClick={() => selectSemester(row.sem)}
+                  aria-pressed={selected}
+                  className={`text-left rounded-2xl border p-4 transition-colors ${
+                    selected
+                      ? "bg-cyan-500/10 border-cyan-500/60"
+                      : "bg-slate-900 border-slate-800 hover:border-slate-600"
+                  }`}
+                >
+                  <div className="flex items-baseline justify-between mb-2">
+                    <span className="font-semibold text-slate-100">
+                      Semester {row.sem}
+                    </span>
+                    {row.pct === null ? (
+                      <span className="text-slate-500 text-sm">—</span>
+                    ) : (
+                      <span
+                        className={`text-2xl font-extrabold ${pctColor(row.pct)}`}
+                      >
+                        {row.pct}%
+                      </span>
+                    )}
+                  </div>
+                  {row.pct !== null && <Bar pct={row.pct} />}
+                  <p className="text-xs text-slate-400 mt-2">
+                    {row.records} record{row.records === 1 ? "" : "s"} &middot;{" "}
+                    {row.present}/{row.total} present
+                  </p>
+                </button>
+              );
+            })}
           </div>
         )}
-      </div>
+      </section>
 
-      {/* Per-student % for the selected semester */}
+      {/* Per-student */}
       {studentRows.length > 0 && (
-        <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
-          <h2 className="text-lg font-semibold text-slate-200 mb-1">👤 Student Attendance — Semester {semester}</h2>
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+          <h2 className="text-base sm:text-lg font-semibold text-slate-200">
+            Students in Semester {semester}
+          </h2>
           <p className="text-xs text-slate-500 mb-3">
-            Below {MIN_ATTENDANCE_PERCENT}% is flagged in red.
+            Below {MIN_ATTENDANCE_PERCENT}% shows in red.
           </p>
-          <div className="overflow-x-auto max-h-80 overflow-y-auto border border-slate-800 rounded-xl">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-800 bg-slate-950 text-slate-400 text-xs sticky top-0">
-                  <th className="p-3">Roll Number</th>
-                  <th className="p-3">Student Name</th>
-                  <th className="p-3">Attendance</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 text-sm">
-                {studentRows.map((row) => (
-                  <tr key={row.id} className="hover:bg-slate-950/40 transition-colors">
-                    <td className="p-3 font-semibold text-cyan-400">{row.roll}</td>
-                    <td className="p-3 text-slate-300">{row.name}</td>
-                    <td className="p-3 text-xs">
-                      {row.pct === null ? (
-                        <span className="text-slate-600">—</span>
-                      ) : (
-                        <span className={`font-semibold ${row.pct < MIN_ATTENDANCE_PERCENT ? 'text-rose-400' : 'text-emerald-400'}`}>
-                          {row.pct}% <span className="text-slate-500 font-normal">({row.present}/{row.total})</span>
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+          <ul className="divide-y divide-slate-800/70 lg:max-h-[28rem] lg:overflow-y-auto">
+            {studentRows.map((row) => (
+              <li key={row.id} className="py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-100 truncate">
+                      {row.name}
+                    </p>
+                    <p className="text-xs font-mono text-slate-400">
+                      {row.roll}
+                    </p>
+                  </div>
+                  {row.pct === null ? (
+                    <span className="text-slate-600 text-sm">—</span>
+                  ) : (
+                    <div className="text-right shrink-0">
+                      <p className={`text-sm font-bold ${pctColor(row.pct)}`}>
+                        {row.pct}%
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {row.present}/{row.total}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {row.pct !== null && (
+                  <div className="mt-2">
+                    <Bar pct={row.pct} />
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {/* Saved records */}
       {historyList.length > 0 && (
-        <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 mb-6">
-          <h2 className="text-lg font-semibold text-slate-200 mb-1">🗓 Semester {semester} Records</h2>
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {historyList.map(({ dateKey, rec }) => {
-              const p = (rec.present || []).length;
-              const a = (rec.absent || []).length;
-              return (
-                <div
-                  key={dateKey}
-                  className="flex items-center justify-between gap-2 border border-slate-800 bg-slate-950/50 rounded-xl px-3 py-2 text-sm">
-                  <div className="flex-1 flex flex-wrap items-center gap-x-4 gap-y-1">
-                    <span className="font-semibold text-slate-200">{formatDate(dateKey)}</span>
-                    <span className="text-emerald-400 text-xs">Present: {p}</span>
-                    <span className="text-rose-400 text-xs">Absent: {a}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteRecord(dateKey)}
-                    className="text-xs text-rose-400 hover:text-white hover:bg-rose-500 border border-rose-500/30 px-2 py-1 rounded-lg transition-all">
-                    Delete
-                  </button>
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+          <h2 className="text-base sm:text-lg font-semibold text-slate-200 mb-3">
+            Saved records, Semester {semester}
+          </h2>
+          <ul className="space-y-2 lg:max-h-80 lg:overflow-y-auto">
+            {historyList.map(({ dateKey, rec }) => (
+              <li
+                key={dateKey}
+                className="flex items-center justify-between gap-3 border border-slate-800 bg-slate-950/50 rounded-xl px-3.5 py-3"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-100">
+                    {formatDate(dateKey)}
+                  </p>
+                  <p className="text-xs">
+                    <span className="text-emerald-400">
+                      {(rec.present || []).length} present
+                    </span>
+                    <span className="text-slate-600"> &middot; </span>
+                    <span className="text-rose-400">
+                      {(rec.absent || []).length} absent
+                    </span>
+                  </p>
                 </div>
-              );
-            })}
-          </div>
-        </div>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteRecord(dateKey)}
+                  className="shrink-0 text-xs font-semibold text-rose-400 hover:text-white hover:bg-rose-500 border border-rose-500/30 px-3.5 py-2 rounded-lg transition-colors"
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
-    </div>
+    </AppShell>
   );
 }

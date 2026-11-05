@@ -458,8 +458,7 @@ export default function AdminDashboard() {
                           )}
                         </div>
                         <p className="text-xs text-slate-400 mt-1">
-                          {cr.collegeName} • {cr.branch} (Sec {cr.section}, Year{" "}
-                          {cr.year}) • TG: {cr.tgName} •{" "}
+                          {cr.collegeName} • {cr.branch} (Sec {cr.section}) • TG: {cr.tgName} •{" "}
                           <span className="text-slate-500">{cr.email}</span>
                         </p>
                       </div>
@@ -623,7 +622,7 @@ export default function AdminDashboard() {
                           </h4>
                           <p className="text-xs text-slate-400 mt-0.5">
                             {cr.collegeName} • {cr.branch} Sec {cr.section} •
-                            Year {cr.year} • TG: {cr.tgName}
+                             TG: {cr.tgName}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 text-xs">

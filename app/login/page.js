@@ -131,13 +131,6 @@ export default function Login() {
         >
           <span>Sign in with Google</span>
         </button>
-
-        <p className="text-center text-xs text-slate-400 mt-6">
-          New CR?{" "}
-          <a href="/register" className="text-cyan-400 hover:underline font-medium">
-            Register here
-          </a>
-        </p>
       </div>
     </div>
   );
