@@ -1,4 +1,4 @@
-// app/contact/page.jsx  (public: no login needed)
+// app/contact/page.jsx
 'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
@@ -42,7 +42,7 @@ const fmtTime = (ts) =>
     : '';
 
 const field =
-  'w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-100 placeholder:text-slate-500';
+  'w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-100 placeholder:text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed';
 
 export default function ContactPage() {
   const { user } = useCRDashboard();
@@ -65,9 +65,29 @@ export default function ContactPage() {
   const [lookupError, setLookupError] = useState('');
   const [found, setFound] = useState(null);
 
-  // Prefill email for signed-in CRs
+  // Prefill email and fetch crName for signed-in CRs, locking inputs
   useEffect(() => {
-    if (user?.email) setEmail((prev) => prev || user.email);
+    if (user) {
+      setEmail(user.email || 'mrsahu013@gmail.com');
+    }
+
+    const fetchCRName = async () => {
+      if (user?.uid) {
+        try {
+          const snapshot = await get(ref(db, `users/${user.uid}`));
+          if (snapshot.exists()) {
+            const data = snapshot.val();
+            if (data.crName) {
+              setName(data.crName);
+            }
+          }
+        } catch (err) {
+          console.error("Error fetching CR name:", err);
+        }
+      }
+    };
+
+    fetchCRName();
   }, [user]);
 
   const submit = async (e) => {
@@ -171,14 +191,21 @@ export default function ContactPage() {
       <div className="max-w-2xl mx-auto space-y-5">
         <div>
           <Link href="/" className="text-sm text-cyan-400 hover:underline">
-            &larr; Back to home
+            ← Back to home
           </Link>
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500 mt-3">
             Contact us
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Send feedback, report a problem or ask a question. You don&apos;t need an account.
+            Send feedback, report a problem or ask a question. You don't need an account.
           </p>
+
+          <p className="text-sm text-red-400 mt-1">
+  If you are not logged in then contact me at{" "}
+  <Link href="mailto:mrsahu013@gmail.com" className="text-cyan-400 hover:underline">
+    mrsahu013@gmail.com
+  </Link>
+</p>
         </div>
 
         <div role="tablist" className="flex gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
@@ -283,6 +310,7 @@ export default function ContactPage() {
                       maxLength={100}
                       autoComplete="name"
                       required
+                      disabled={Boolean(user)}
                       className={field}
                     />
                   </div>
@@ -293,11 +321,12 @@ export default function ContactPage() {
                     <input
                       id="c-email"
                       type="email"
-                      value={email}
+                      value={email || 'mrsahu013@gmail.com'}
                       onChange={(e) => setEmail(e.target.value)}
                       maxLength={150}
                       autoComplete="email"
                       required
+                      disabled={Boolean(user)}
                       className={field}
                     />
                   </div>
