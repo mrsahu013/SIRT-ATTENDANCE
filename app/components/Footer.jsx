@@ -23,7 +23,7 @@ export default function Footer() {
             <ul className="flex sm:flex-col gap-5 sm:gap-2">
               <li>
                 <Link
-                  href="https://www.mojihike.online/contact"
+                  href="/contact"
                   className="text-sm text-slate-400 hover:text-cyan-400 transition-colors"
                 >
                   Contact

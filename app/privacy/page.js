@@ -1,17 +1,20 @@
 import Link from "next/link";
+import { RETENTION_DAYS } from "@/lib/config";
 
 export const metadata = {
   title: "Privacy Policy | Mark Student",
   description: "How Mark Student collects, uses and protects your data.",
 };
 
-const LAST_UPDATED = "October 28, 2026";
-const CONTACT_URL = "https://www.mojihike.online/contact";
+const LAST_UPDATED = "November 5, 2026";
+const CONTACT_URL = "contact";
 
 function Section({ title, children }) {
   return (
     <section className="mb-8">
-      <h2 className="text-lg font-bold text-slate-200 mb-3">{title}</h2>
+      <h2 className="text-base sm:text-lg font-bold text-slate-200 mb-3">
+        {title}
+      </h2>
       <div className="text-sm text-slate-400 leading-relaxed space-y-3">
         {children}
       </div>
@@ -21,8 +24,8 @@ function Section({ title, children }) {
 
 export default function PrivacyPolicy() {
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
-      <div className="max-w-3xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 md:p-10">
+    <div className="min-h-dvh bg-slate-950 text-slate-100 p-4 sm:p-6 md:p-10 font-sans">
+      <div className="max-w-3xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-5 sm:p-8 md:p-10">
         <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500 mb-2">
           Privacy Policy
         </h1>
@@ -52,8 +55,9 @@ export default function PrivacyPolicy() {
             <span className="text-slate-200 font-medium">
               CR profile details:
             </span>{" "}
-            your name, roll number, college name, branch, section, year and
-            Teacher Guardian (TG) name.
+            your name, roll number, college name, branch, section, default
+            semester, Teacher Guardian (TG) name, and a unique 10-digit user ID
+            the app creates for you.
           </p>
           <p>
             <span className="text-slate-200 font-medium">
@@ -65,8 +69,8 @@ export default function PrivacyPolicy() {
             <span className="text-slate-200 font-medium">
               Attendance records:
             </span>{" "}
-            the date, and the lists of present and absent students for that
-            date.
+            the date, the semester (1 to 8), and the lists of present and absent
+            students for that date.
           </p>
         </Section>
 
@@ -74,6 +78,9 @@ export default function PrivacyPolicy() {
           <ul className="list-disc pl-5 space-y-1">
             <li>To create your account and log you in.</li>
             <li>To show your student list and let you mark attendance.</li>
+            <li>
+              To show attendance percentages and progress for each semester.
+            </li>
             <li>
               To create the attendance report (JPG image or WhatsApp text) that
               you choose to share.
@@ -92,6 +99,10 @@ export default function PrivacyPolicy() {
             policy and security practices also apply. The attendance JPG is
             generated inside your browser and is not uploaded to our servers.
           </p>
+          <p>
+            If you tap Share on WhatsApp, the attendance text is passed to
+            WhatsApp, which has its own privacy policy.
+          </p>
         </Section>
 
         <Section title="5. Who can see the data">
@@ -101,7 +112,7 @@ export default function PrivacyPolicy() {
             </li>
             <li>
               The app administrator can view all CR profiles, student lists and
-              attendance records, and can delete a CR account's data.
+              attendance records, and can delete a CR account&apos;s data.
             </li>
             <li>
               Anything you share yourself, such as a downloaded JPG or copied
@@ -113,13 +124,21 @@ export default function PrivacyPolicy() {
         <Section title="6. How long we keep data">
           <ul className="list-disc pl-5 space-y-1">
             <li>
-              Attendance records are removed automatically after 2 days. The
-              cleanup runs when a CR opens their dashboard, so a record may stay
-              a little longer if the CR has not logged in.
+              Attendance records are kept for {RETENTION_DAYS} days (about 6
+              months) and then removed automatically. The cleanup runs when a CR
+              opens their dashboard, so a record may stay a little longer if the
+              CR has not logged in. You can also delete any saved record
+              yourself from the Progress page.
             </li>
             <li>
               Student lists and CR profiles are kept until you delete them or
               the administrator removes your account.
+            </li>
+            <li>
+              When the administrator deletes a CR, that CR&apos;s profile,
+              students and attendance records are removed. The login account
+              itself may remain in Firebase Authentication until deleted on
+              request.
             </li>
           </ul>
         </Section>
@@ -135,9 +154,10 @@ export default function PrivacyPolicy() {
 
         <Section title="8. Cookies and local storage">
           <p>
-            The app uses browser storage only to keep you signed in through
-            Firebase Authentication. We do not use advertising or tracking
-            cookies.
+            The app uses browser storage to keep you signed in through Firebase
+            Authentication, to remember the semester you last selected, and to
+            remember which announcement you dismissed. We do not use advertising
+            or tracking cookies.
           </p>
         </Section>
 
@@ -153,8 +173,8 @@ export default function PrivacyPolicy() {
         <Section title="10. Your choices">
           <ul className="list-disc pl-5 space-y-1">
             <li>
-              You can edit or delete any student from your dashboard at any
-              time.
+              You can edit or delete any student, and delete any saved
+              attendance record, from the app at any time.
             </li>
             <li>
               You can ask for your account and all related data to be deleted by

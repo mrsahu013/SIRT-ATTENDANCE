@@ -2,15 +2,16 @@
   "rules": {
     ".read": false,
     ".write": false,
+
     "users": {
       ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
       ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid",
-        ".validate": "newData.hasChildren(['crName','crRollNumber','collegeName','branch','section','year','tgName'])",
+        ".validate": "newData.hasChildren(['crName','crRollNumber','collegeName','branch','section','tgName'])",
         "userId": {
-          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{10}$/) && (!data.exists() || data.val() === newData.val())"
+          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{10}$/) && (!data.exists() || data.val() === newData.val()) && root.child('userIds').child(newData.val()).val() === $uid"
         },
         "semester": {
           ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 8"
@@ -20,6 +21,7 @@
         }
       }
     },
+
     "students": {
       ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
       ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
@@ -31,6 +33,7 @@
         }
       }
     },
+
     "attendance": {
       ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
       ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
@@ -40,22 +43,60 @@
         "$sem": {
           ".validate": "$sem.matches(/^sem[1-8]$/)",
           "$date": {
-            ".validate": "$date.matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) && newData.hasChildren(['date','timestamp','present','absent'])"
+            ".validate": "$date.matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) && newData.hasChildren(['date','timestamp'])"
           }
         }
       }
     },
+
     "announcements": {
       "global": {
         ".read": "auth != null",
         ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'"
       }
     },
+
     "userIds": {
       ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
       ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
       "$id": {
         ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
+      }
+    },
+
+    "messages": {
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      "$ticket": {
+        ".read": true,
+        ".write": "(auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com') || !data.exists()",
+        ".validate": "newData.hasChildren(['name','email','type','message','createdAt','status'])",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+        },
+        "email": {
+          ".validate": "newData.isString() && newData.val().length <= 150 && newData.val().matches(/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/)"
+        },
+        "type": {
+          ".validate": "newData.val() === 'feedback' || newData.val() === 'bug' || newData.val() === 'question' || newData.val() === 'other'"
+        },
+        "message": {
+          ".validate": "newData.isString() && newData.val().length >= 5 && newData.val().length <= 2000"
+        },
+        "createdAt": {
+          ".validate": "newData.isNumber()"
+        },
+        "status": {
+          ".validate": "newData.val() === 'new' || (auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com' && (newData.val() === 'read' || newData.val() === 'replied'))"
+        },
+        "reply": {
+          ".validate": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com' && newData.isString() && newData.val().length <= 2000"
+        },
+        "repliedAt": {
+          ".validate": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com' && newData.isNumber()"
+        },
+        "$other": {
+          ".validate": false
+        }
       }
     }
   }

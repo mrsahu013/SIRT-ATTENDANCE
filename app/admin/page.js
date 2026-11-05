@@ -6,21 +6,46 @@ import { ref, get, child, remove, set, update } from "firebase/database";
 import { useRouter } from "next/navigation";
 import { getLocalDate, formatDate } from "@/lib/dateUtils";
 import { RETENTION_DAYS, MAX_SEMESTER } from "@/lib/config";
+import MessagesTab from "./MessagesTab";
 
 // Flat shared roster per CR. Handles legacy / intermediate sem-nested data too.
 const rosterForCR = (studentsNode) => {
-  const node = studentsNode || {};
+  const node =
+    studentsNode &&
+    typeof studentsNode === "object" &&
+    !Array.isArray(studentsNode)
+      ? studentsNode
+      : {};
   const out = [];
-  Object.entries(node).forEach(([sid, s]) => {
-    if (s && s.name) {
-      out.push([sid, s]);
-    } else if (/^sem[1-8]$/.test(sid) && s && typeof s === "object") {
-      // Intermediate format: merge sem children back into the flat list
-      Object.entries(s).forEach(([sid2, s2]) => {
-        if (s2 && s2.name) out.push([sid2, s2]);
+  const seen = new Set();
+
+  Object.entries(node).forEach(([sid, student]) => {
+    if (student && typeof student === "object" && student.name) {
+      if (!seen.has(sid)) {
+        out.push([sid, student]);
+        seen.add(sid);
+      }
+    } else if (
+      /^sem[1-8]$/.test(sid) &&
+      student &&
+      typeof student === "object" &&
+      !Array.isArray(student)
+    ) {
+      // Intermediate format: merge semester children into the flat list.
+      Object.entries(student).forEach(([studentId, studentData]) => {
+        if (
+          studentData &&
+          typeof studentData === "object" &&
+          studentData.name &&
+          !seen.has(studentId)
+        ) {
+          out.push([studentId, studentData]);
+          seen.add(studentId);
+        }
       });
     }
   });
+
   return out;
 };
 
@@ -70,9 +95,15 @@ export default function AdminDashboard() {
   const toastTimer = useRef(null);
   const showToast = (message, type = "success") => {
     setToast({ message, type });
-    clearTimeout(toastTimer.current);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3500);
   };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, []);
 
   const router = useRouter();
 
@@ -82,7 +113,8 @@ export default function AdminDashboard() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        router.push("/login");
+        setLoading(false);
+        router.replace("/login");
         return;
       }
 
@@ -92,7 +124,8 @@ export default function AdminDashboard() {
         user.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
 
       if (!isAdmin) {
-        router.push("/");
+        setLoading(false);
+        router.replace("/");
         return;
       }
 
@@ -246,6 +279,11 @@ export default function AdminDashboard() {
       if (attSemFilter !== "all") {
         records = records.filter((r) => r.sem === Number(attSemFilter));
       }
+      if (attDateFilter) {
+        records = records.filter(
+          (r) => r.dateKey === attDateFilter || r.date === attDateFilter,
+        );
+      }
       return { uid, cr, records };
     })
     .filter(({ cr, records }) => {
@@ -322,6 +360,7 @@ export default function AdminDashboard() {
           { id: "crs", label: "👥 CR & Student Management" },
           { id: "attendance", label: "📋 Attendance Logs" },
           { id: "broadcast", label: "📢 Broadcasts" },
+          { id: "messages", label: "✉️ Messages" },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -458,7 +497,8 @@ export default function AdminDashboard() {
                           )}
                         </div>
                         <p className="text-xs text-slate-400 mt-1">
-                          {cr.collegeName} • {cr.branch} (Sec {cr.section}) • TG: {cr.tgName} •{" "}
+                          {cr.collegeName} • {cr.branch} (Sec {cr.section}) •
+                          TG: {cr.tgName} •{" "}
                           <span className="text-slate-500">{cr.email}</span>
                         </p>
                       </div>
@@ -622,7 +662,7 @@ export default function AdminDashboard() {
                           </h4>
                           <p className="text-xs text-slate-400 mt-0.5">
                             {cr.collegeName} • {cr.branch} Sec {cr.section} •
-                             TG: {cr.tgName}
+                            TG: {cr.tgName}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -653,7 +693,7 @@ export default function AdminDashboard() {
                           {records.length === 0 ? (
                             <p className="text-xs text-slate-500 italic">
                               {attDateFilter
-                                ? "No attendance marked on the selected date."
+                                ? "No attendance marked on the selected date and semester."
                                 : "This CR has not marked any attendance yet."}
                             </p>
                           ) : (
@@ -783,6 +823,8 @@ export default function AdminDashboard() {
             </div>
           </div>
         )}
+
+        {activeTab === "messages" && <MessagesTab showToast={showToast} />}
 
         {activeTab === "broadcast" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 max-w-xl mx-auto">
