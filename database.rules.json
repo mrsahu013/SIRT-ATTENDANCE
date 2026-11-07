@@ -4,8 +4,8 @@
     ".write": false,
 
     "users": {
-      ".read": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
-      ".write": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid",
@@ -23,8 +23,8 @@
     },
 
     "students": {
-      ".read": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
-      ".write": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid",
@@ -35,8 +35,8 @@
     },
 
     "attendance": {
-      ".read": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
-      ".write": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid",
@@ -52,23 +52,23 @@
     "announcements": {
       "global": {
         ".read": "auth != null",
-        ".write": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'"
+        ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'"
       }
     },
 
     "userIds": {
-      ".read": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
-      ".write": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
+      ".write": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
       "$id": {
         ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
       }
     },
 
     "messages": {
-      ".read": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com'",
+      ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com'",
       "$ticket": {
         ".read": true,
-        ".write": "(auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com') || !data.exists()",
+        ".write": "(auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com') || !data.exists()",
         ".validate": "newData.hasChildren(['name','email','type','message','createdAt','status'])",
         "name": {
           ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
@@ -86,13 +86,13 @@
           ".validate": "newData.isNumber()"
         },
         "status": {
-          ".validate": "newData.val() === 'new' || (auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com' && (newData.val() === 'read' || newData.val() === 'replied'))"
+          ".validate": "newData.val() === 'new' || (auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com' && (newData.val() === 'read' || newData.val() === 'replied'))"
         },
         "reply": {
-          ".validate": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com' && newData.isString() && newData.val().length <= 2000"
+          ".validate": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com' && newData.isString() && newData.val().length <= 2000"
         },
         "repliedAt": {
-          ".validate": "auth != null && auth.token.email_verified === true && auth.token.email != null && auth.token.email.toLowerCase() === 'YOUR_ADMIN_EMAIL@example.com' && newData.isNumber()"
+          ".validate": "auth != null && auth.token.email != null && auth.token.email.toLowerCase() === 'mrsahu013@gmail.com' && newData.isNumber()"
         },
         "$other": {
           ".validate": false

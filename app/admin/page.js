@@ -7,6 +7,10 @@ import { useRouter } from "next/navigation";
 import { getLocalDate, formatDate } from "@/lib/dateUtils";
 import { RETENTION_DAYS, MAX_SEMESTER } from "@/lib/config";
 import MessagesTab from "./MessagesTab";
+import CRCard from "./CRCard";
+
+const collator = new Intl.Collator(undefined, { numeric: true });
+const byRollField = (a, b) => collator.compare(String(a.roll), String(b.roll));
 
 // Flat shared roster per CR. Handles legacy / intermediate sem-nested data too.
 const rosterForCR = (studentsNode) => {
@@ -51,19 +55,30 @@ const rosterForCR = (studentsNode) => {
 
 const countStudentsForCR = (studentsNode) => rosterForCR(studentsNode).length;
 
-// Flat [{dateKey, sem, ...record}] list (newest first). Handles legacy flat records.
-const recordsForCR = (attNode) => {
+// Flat [{dateKey, sem, path, ...record}] list (newest first). Handles legacy flat records.
+// `path` is the database path of the record so it can be edited or deleted.
+const recordsForCR = (uid, attNode) => {
   const node = attNode || {};
   const out = [];
   Object.entries(node).forEach(([k, v]) => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(k)) {
       // Legacy flat record -> Semester 1
-      out.push({ dateKey: k, sem: 1, ...(v || {}) });
+      out.push({
+        dateKey: k,
+        sem: 1,
+        ...(v || {}),
+        path: `attendance/${uid}/${k}`,
+      });
       return;
     }
     const semNum = parseInt(k.replace("sem", ""), 10) || 1;
     Object.entries(v || {}).forEach(([dateKey, record]) => {
-      out.push({ dateKey, sem: semNum, ...(record || {}) });
+      out.push({
+        dateKey,
+        sem: semNum,
+        ...(record || {}),
+        path: `attendance/${uid}/${k}/${dateKey}`,
+      });
     });
   });
   return out.sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1));
@@ -169,26 +184,52 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleDeleteCR = async (uid) => {
+  // ----- Used by CRCard after any edit -----
+  const reloadAfterChange = async () => {
+    try {
+      await fetchAllSystemData();
+    } catch (err) {
+      showToast("Saved, but could not refresh: " + err.message, "error");
+    }
+  };
+
+  // ----- Attendance record editing -----
+  const handleDeleteRecord = async (record) => {
     if (
       !confirm(
-        "Delete this CR's profile, students and attendance records? (Their login account stays in Firebase Authentication.)",
+        `Delete the attendance of Semester ${record.sem} for ${formatDate(record.date || record.dateKey)}? This cannot be undone.`,
       )
     )
       return;
     try {
-      // One atomic multi-path delete
-      const updates = {
-        [`users/${uid}`]: null,
-        [`students/${uid}`]: null,
-        [`attendance/${uid}`]: null,
-      };
-      if (users[uid]?.userId) updates[`userIds/${users[uid].userId}`] = null;
-      await update(ref(db), updates);
-      showToast("CR data removed successfully.");
-      await fetchAllSystemData();
+      await remove(ref(db, record.path));
+      showToast("Attendance record deleted.");
+      await reloadAfterChange();
     } catch (err) {
-      showToast("Error deleting CR: " + err.message, "error");
+      showToast("Could not delete record: " + err.message, "error");
+    }
+  };
+
+  // Move one student between Present and Absent inside a saved record
+  const handleMoveStudent = async (record, entry, toPresent) => {
+    const present = (record.present || []).filter((x) => x.roll !== entry.roll);
+    const absent = (record.absent || []).filter((x) => x.roll !== entry.roll);
+    const item = { roll: entry.roll, name: entry.name };
+    if (toPresent) present.push(item);
+    else absent.push(item);
+    present.sort(byRollField);
+    absent.sort(byRollField);
+
+    try {
+      await update(ref(db, record.path), {
+        present,
+        absent,
+        editedAt: Date.now(),
+      });
+      showToast(`${entry.name} marked ${toPresent ? "present" : "absent"}.`);
+      await reloadAfterChange();
+    } catch (err) {
+      showToast("Could not update record: " + err.message, "error");
     }
   };
 
@@ -232,7 +273,7 @@ export default function AdminDashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
+      <div className="flex-1 bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
         <div className="text-center">
           <div className="w-8 h-8 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
           <p className="text-slate-400 text-sm">
@@ -268,14 +309,14 @@ export default function AdminDashboard() {
 
   // CRs who marked attendance today (any semester)
   const markedTodayCount = Object.keys(users).filter((uid) =>
-    recordsForCR(attendanceData[uid]).some((r) => r.dateKey === todayStr),
+    recordsForCR(uid, attendanceData[uid]).some((r) => r.dateKey === todayStr),
   ).length;
 
   const semOptions = Array.from({ length: MAX_SEMESTER }, (_, i) => i + 1);
 
   const attendanceRows = Object.entries(users)
     .map(([uid, cr]) => {
-      let records = recordsForCR(attendanceData[uid]);
+      let records = recordsForCR(uid, attendanceData[uid]);
       if (attSemFilter !== "all") {
         records = records.filter((r) => r.sem === Number(attSemFilter));
       }
@@ -313,7 +354,7 @@ export default function AdminDashboard() {
     });
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
+    <div className="flex-1 bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
       {toast && (
         <div
           className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-sm w-[90%] px-4 py-3 rounded-xl text-sm font-semibold shadow-2xl border ${
@@ -456,89 +497,16 @@ export default function AdminDashboard() {
                 No matching Class Representatives found.
               </p>
             ) : (
-              filteredCRs.map(([uid, cr]) => {
-                const studentList = rosterForCR(studentsData[uid]);
-
-                return (
-                  <div
-                    key={uid}
-                    className="border border-slate-800 bg-slate-950/50 rounded-2xl p-5 shadow-md"
-                  >
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-slate-800">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-bold text-slate-100 text-base">
-                            {cr.crName}
-                          </h3>
-                          <span className="bg-cyan-500/10 text-cyan-400 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-cyan-500/20">
-                            CR • Roll: {cr.crRollNumber}
-                          </span>
-                          {cr.semester && (
-                            <span className="bg-emerald-500/10 text-emerald-300 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-emerald-500/20">
-                              Default Sem {cr.semester}
-                            </span>
-                          )}
-                          {cr.userId ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                navigator.clipboard?.writeText(cr.userId);
-                                showToast(`Copied ${cr.userId}`);
-                              }}
-                              title="Click to copy"
-                              className="bg-indigo-500/10 text-indigo-300 text-xs font-mono font-semibold px-2.5 py-0.5 rounded-full border border-indigo-500/30 hover:bg-indigo-500 hover:text-white transition-all"
-                            >
-                              {cr.userId}
-                            </button>
-                          ) : (
-                            <span className="text-xs text-slate-500 italic">
-                              ID pending (assigned on next login)
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-slate-400 mt-1">
-                          {cr.collegeName} • {cr.branch} (Sec {cr.section}) •
-                          TG: {cr.tgName} •{" "}
-                          <span className="text-slate-500">{cr.email}</span>
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => handleDeleteCR(uid)}
-                        className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-3 py-1.5 rounded-xl text-xs font-semibold hover:bg-rose-500 hover:text-white transition-all"
-                      >
-                        Delete CR & Data
-                      </button>
-                    </div>
-
-                    <div className="mt-4">
-                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                        Enrolled Students ({studentList.length})
-                      </h4>
-                      {studentList.length === 0 ? (
-                        <p className="text-xs text-slate-500 italic bg-slate-900/50 p-3 rounded-xl border border-slate-800/60">
-                          No students added under this CR yet.
-                        </p>
-                      ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-48 overflow-y-auto pr-1">
-                          {studentList.map(([studentId, student]) => (
-                            <div
-                              key={studentId}
-                              className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl text-xs"
-                            >
-                              <p className="font-medium text-slate-200">
-                                {student.name}
-                              </p>
-                              <p className="text-slate-400 text-[10px]">
-                                Roll: {student.rollNumber}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+              filteredCRs.map(([uid, cr]) => (
+                <CRCard
+                  key={uid}
+                  uid={uid}
+                  cr={cr}
+                  studentList={rosterForCR(studentsData[uid])}
+                  showToast={showToast}
+                  onChanged={reloadAfterChange}
+                />
+              ))
             )}
           </div>
         )}
@@ -631,9 +599,10 @@ export default function AdminDashboard() {
                 attendanceRows.map(({ uid, cr, records }) => {
                   const isOpen = !!expandedCRs[uid];
                   // "Marked today" is per-CR truth, independent of the semester filter
-                  const markedToday = recordsForCR(attendanceData[uid]).some(
-                    (r) => r.dateKey === todayStr,
-                  );
+                  const markedToday = recordsForCR(
+                    uid,
+                    attendanceData[uid],
+                  ).some((r) => r.dateKey === todayStr);
                   const totalStudentsOfCR = countStudentsForCR(
                     studentsData[uid],
                   );
@@ -740,6 +709,11 @@ export default function AdminDashboard() {
                                           })}
                                         </span>
                                       )}
+                                      {record.editedAt && (
+                                        <span className="text-amber-400 font-normal">
+                                          edited by admin
+                                        </span>
+                                      )}
                                     </span>
                                     <span className="flex items-center gap-3">
                                       <span className="text-emerald-400">
@@ -758,54 +732,98 @@ export default function AdminDashboard() {
                                   </button>
 
                                   {recOpen && (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 border-t border-slate-800">
-                                      <div className="border border-emerald-500/40 rounded-lg overflow-hidden">
-                                        <div className="bg-emerald-600 text-white text-xs font-bold px-3 py-1.5">
-                                          Present ({presentList.length})
-                                        </div>
-                                        <div className="max-h-56 overflow-y-auto">
-                                          {presentList.length === 0 ? (
-                                            <p className="p-2.5 text-xs text-slate-400">
-                                              No present students
-                                            </p>
-                                          ) : (
-                                            presentList.map((p, idx) => (
-                                              <div
-                                                key={idx}
-                                                className="px-3 py-1.5 text-xs bg-emerald-500/20 text-emerald-100 border-b border-emerald-900/40 last:border-b-0"
-                                              >
-                                                <span className="font-mono font-semibold">
-                                                  {p.roll}
-                                                </span>{" "}
-                                                - {p.name}
-                                              </div>
-                                            ))
-                                          )}
-                                        </div>
+                                    <div className="border-t border-slate-800 p-3 space-y-3">
+                                      <div className="flex justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleDeleteRecord(record)
+                                          }
+                                          className="text-xs font-semibold text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded-lg hover:bg-rose-500 hover:text-white transition-all"
+                                        >
+                                          Delete this record
+                                        </button>
                                       </div>
 
-                                      <div className="border border-rose-500/40 rounded-lg overflow-hidden">
-                                        <div className="bg-rose-600 text-white text-xs font-bold px-3 py-1.5">
-                                          Absent ({absentList.length})
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div className="border border-emerald-500/40 rounded-lg overflow-hidden">
+                                          <div className="bg-emerald-600 text-white text-xs font-bold px-3 py-1.5">
+                                            Present ({presentList.length})
+                                          </div>
+                                          <div className="max-h-56 overflow-y-auto">
+                                            {presentList.length === 0 ? (
+                                              <p className="p-2.5 text-xs text-slate-400">
+                                                No present students
+                                              </p>
+                                            ) : (
+                                              presentList.map((p, idx) => (
+                                                <div
+                                                  key={idx}
+                                                  className="flex items-center justify-between gap-2 px-3 py-1.5 text-xs bg-emerald-500/20 text-emerald-100 border-b border-emerald-900/40 last:border-b-0"
+                                                >
+                                                  <span className="min-w-0 truncate">
+                                                    <span className="font-mono font-semibold">
+                                                      {p.roll}
+                                                    </span>{" "}
+                                                    - {p.name}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      handleMoveStudent(
+                                                        record,
+                                                        p,
+                                                        false,
+                                                      )
+                                                    }
+                                                    className="shrink-0 text-[11px] font-semibold text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded-md hover:bg-rose-500 hover:text-white"
+                                                  >
+                                                    Make absent
+                                                  </button>
+                                                </div>
+                                              ))
+                                            )}
+                                          </div>
                                         </div>
-                                        <div className="max-h-56 overflow-y-auto">
-                                          {absentList.length === 0 ? (
-                                            <p className="p-2.5 text-xs text-slate-400">
-                                              No absent students 🎉
-                                            </p>
-                                          ) : (
-                                            absentList.map((a, idx) => (
-                                              <div
-                                                key={idx}
-                                                className="px-3 py-1.5 text-xs bg-rose-500/20 text-rose-100 border-b border-rose-900/40 last:border-b-0"
-                                              >
-                                                <span className="font-mono font-semibold">
-                                                  {a.roll}
-                                                </span>{" "}
-                                                - {a.name}
-                                              </div>
-                                            ))
-                                          )}
+
+                                        <div className="border border-rose-500/40 rounded-lg overflow-hidden">
+                                          <div className="bg-rose-600 text-white text-xs font-bold px-3 py-1.5">
+                                            Absent ({absentList.length})
+                                          </div>
+                                          <div className="max-h-56 overflow-y-auto">
+                                            {absentList.length === 0 ? (
+                                              <p className="p-2.5 text-xs text-slate-400">
+                                                No absent students 🎉
+                                              </p>
+                                            ) : (
+                                              absentList.map((a, idx) => (
+                                                <div
+                                                  key={idx}
+                                                  className="flex items-center justify-between gap-2 px-3 py-1.5 text-xs bg-rose-500/20 text-rose-100 border-b border-rose-900/40 last:border-b-0"
+                                                >
+                                                  <span className="min-w-0 truncate">
+                                                    <span className="font-mono font-semibold">
+                                                      {a.roll}
+                                                    </span>{" "}
+                                                    - {a.name}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      handleMoveStudent(
+                                                        record,
+                                                        a,
+                                                        true,
+                                                      )
+                                                    }
+                                                    className="shrink-0 text-[11px] font-semibold text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-md hover:bg-emerald-500 hover:text-white"
+                                                  >
+                                                    Make present
+                                                  </button>
+                                                </div>
+                                              ))
+                                            )}
+                                          </div>
                                         </div>
                                       </div>
                                     </div>
