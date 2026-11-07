@@ -1,182 +1,91 @@
 # Mark Student
 
-A web app for Class Representatives (CRs) to manage their class students and take daily attendance, semester by semester. An admin can view all CRs, students and attendance records, and send announcements.
+Attendance app for Class Representatives (CRs). Keep one student list, mark
+daily attendance for Semester 1 to 8, and share the result on WhatsApp or as a JPG.
 
-The layout works on phones and laptops: a sidebar on large screens, and a top bar with bottom tabs on phones.
+Built with Next.js (App Router), Tailwind CSS and Firebase (Authentication and Realtime Database).
 
 ## Features
 
-**For CRs**
-- Register and log in with email/password or Google
-- Reset a forgotten password by email
-- Get a unique, permanent 10-digit user ID
-- Keep one student list that is shared across Semester 1 to 8
-- Add, edit, delete and search students
-- Bulk upload students by typing them in, uploading a CSV, or generating a roll number range
-- Mark attendance for any date in the last 180 days (Mark all present / Mark all absent)
-- Save attendance per semester and overwrite a saved day
-- See attendance percentage per semester and per student (below 75% is shown in red)
-- Delete saved records from the Progress page
-- Share the report on WhatsApp, copy it as text, or download it as a JPG
-- Set a default semester and TG name in Profile
-- See announcements from the admin
-- Attendance records are deleted automatically after 180 days (about 6 months)
+- CR registration with email/password or Google, plus a unique 10-digit user ID
+- One shared student roster, bulk upload (CSV or roll-number range)
+- Semester-wise attendance (Sem 1 to 8), kept for 180 days
+- Progress page with per-semester and per-student percentages (below 75% shown in red)
+- Share as WhatsApp text or download as a JPG
+- Admin panel: CR management, attendance logs, broadcast announcements, user messages
+- Contact page (no login needed): send feedback, a problem report or a question.
+  You get a code like `MS-K7P2X9QF4M` and can check the admin's reply with it.
+- Privacy policy page
 
-**For the admin**
-- Overview: total CRs, total students, CRs who marked attendance today
-- Search CRs by user ID, name, roll number, college, branch or email
-- View each CR's students and attendance records
-- Filter attendance logs by CR, date, semester and marked / not marked
-- Delete a CR along with their data
-- Broadcast an announcement to all CR dashboards
-
-## Tech Stack
-
-- Next.js (App Router)
-- React
-- Tailwind CSS
-- Firebase Authentication
-- Firebase Realtime Database
-- html2canvas (for JPG export, loaded only when you download)
-
-## Project Structure
-
-```
-app/
-├── admin/             Admin dashboard
-├── components/
-│   ├── AppShell.jsx   Sidebar (laptop) and top bar + bottom tabs (phone)
-│   ├── Footer.jsx
-│   └── Toast.jsx
-├── forgot-password/   Password reset page
-├── login/             Login page
-├── privacy/           Privacy policy
-├── profile/           CR details, TG name, default semester
-├── progress/          Semester and student attendance percentages, saved records
-├── register/          CR registration page
-├── students/          Student list and bulk upload
-├── globals.css
-├── icon.svg
-├── layout.tsx         Root layout (wraps pages in CRDashboardProvider)
-└── page.jsx           Mark attendance (home)
-lib/
-├── config.js          Retention days, minimum attendance %, max semester
-├── dateUtils.js       Date and roll number helpers
-├── firebase.js        Firebase setup
-├── sort.js            Roll number sorting
-├── useCRDashboard.js  Loads profile, students and attendance once for all pages
-└── userId.js          Allocates the unique 10-digit user ID
-```
-
-## Getting Started
-
-### Requirements
-- Node.js 18 or newer
-- Yarn
-- A Firebase project with **Authentication** (Email/Password and Google) and **Realtime Database** enabled
-
-### Setup
-
-1. Clone the repo and go into the folder
-
-   ```bash
-   git clone https://github.com/mrsahu013/SIRT-ATTENDANCE.git
-   cd SIRT-ATTENDANCE
-   ```
-
-2. Install dependencies
-
-   ```bash
-   yarn install
-   ```
-
-3. Create a `.env.local` file in the project root and add your Firebase details. Use the same variable names that `lib/firebase.js` reads.
-
-   ```env
-   NEXT_PUBLIC_FIREBASE_API_KEY=your_api_key
-   NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-   NEXT_PUBLIC_FIREBASE_DATABASE_URL=https://your_project-default-rtdb.firebaseio.com
-   NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
-   NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
-   NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-   NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
-   NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=your_measurement_id
-
-   # Email of the account that can open /admin
-   NEXT_PUBLIC_MASTER_ADMIN_EMAIL=admin@example.com
-   ```
-
-   Do not commit `.env.local` to Git.
-
-4. Start the development server
-
-   ```bash
-   yarn dev
-   ```
-
-5. Open [http://localhost:3000](http://localhost:3000)
-
-### Other commands
+## Getting started
 
 ```bash
-yarn build   # create a production build
-yarn start   # run the production build
-yarn lint    # check the code for problems
+npm install
+cp .env.example .env.local   # then fill in the values below
+npm run dev
 ```
 
-### Settings
+## Environment variables
 
-Edit `lib/config.js` to change:
-- `RETENTION_DAYS` (default 180): how long attendance is kept
-- `MIN_ATTENDANCE_PERCENT` (default 75): students below this are shown in red
-- `MAX_SEMESTER` (default 8)
-
-## Database Structure
+Put these in `.env.local` and in your hosting provider's environment settings.
 
 ```
-users/{uid}                          CR profile: crName, crRollNumber, collegeName, branch,
-                                     section, semester (default), tgName, email, uid, userId
-userIds/{userId}                     uid that owns this 10-digit ID
-students/{uid}/{studentId}           name, rollNumber (one list shared by all semesters)
-attendance/{uid}/sem{1-8}/{date}     date, semester, timestamp, present[], absent[]
-announcements/global                 message, timestamp
+NEXT_PUBLIC_FIREBASE_API_KEY=
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+NEXT_PUBLIC_FIREBASE_DATABASE_URL=
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+NEXT_PUBLIC_FIREBASE_APP_ID=
+NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=
+
+# The one admin account (used by /admin and the database rules)
+NEXT_PUBLIC_MASTER_ADMIN_EMAIL=you@gmail.com
+
+# Optional: shown on the Contact page
+NEXT_PUBLIC_CONTACT_EMAIL=you@gmail.com
 ```
 
-Dates are stored as `YYYY-MM-DD` and shown as `DD/MM/YYYY`.
+## Database rules
 
-## How to Use
+1. Open Firebase Console, Realtime Database, Rules.
+2. Paste the contents of `database.rules.json`.
+3. Replace every `YOUR_ADMIN_EMAIL@example.com` with your admin email, in lowercase.
+   It must match `NEXT_PUBLIC_MASTER_ADMIN_EMAIL`.
+4. Publish.
 
-1. Register as a CR with your class details and current semester.
-2. Open **Students** and add your students (one by one or in bulk).
-3. Open **Attendance**, choose the semester and date, untick students who are absent and tap **Save attendance**.
-4. Share on WhatsApp, copy the text or download the JPG.
-5. Open **Progress** to see attendance percentages per semester and per student.
+The admin check also requires `email_verified`. Log in to `/admin` with
+**Google sign-in**, which is always verified. An email/password account for the
+admin address works only after the email has been verified.
 
-### Bulk upload format
+## Data model
 
-One student per line, in the format `Name, Roll Number`:
+| Path | Content |
+| --- | --- |
+| `users/{uid}` | CR profile (name, roll, college, branch, section, semester, TG, userId) |
+| `students/{uid}/{sid}` | `name`, `rollNumber` |
+| `attendance/{uid}/sem{1-8}/{YYYY-MM-DD}` | `date`, `semester`, `timestamp`, `present[]`, `absent[]` |
+| `userIds/{10-digit}` | uid that owns the ID |
+| `announcements/global` | `message`, `timestamp` |
+| `messages/{ticket}` | `name`, `email`, `type`, `message`, `createdAt`, `status` (`new`, `read`, `replied`), `reply`, `repliedAt` |
 
-```
-John Doe,0133CI251178
-Jane Smith,0133CI251179
-```
+## Routes
 
-## Security
+| Route | Access |
+| --- | --- |
+| `/`, `/students`, `/progress`, `/profile` | Logged-in CRs |
+| `/login`, `/register`, `/forgot-password`, `/privacy`, `/contact` | Public |
+| `/admin` | Admin email only (checked in the page and in the database rules) |
 
-The admin check in the app runs in the browser, so it only hides the page. Protect the data with Realtime Database rules, for example:
+Public routes are listed in `PUBLIC_PATHS` in `lib/useCRDashboard.js`.
+Add a new public page there, or logged-out visitors are sent to `/login`.
 
-- Each CR can read and write only `users/{uid}`, `students/{uid}` and `attendance/{uid}` for their own `uid`.
-- Only the admin email can read all of `users`, `students` and `attendance`, and write `announcements`.
-- Any signed-in user can read `announcements/global`.
+## Updating the policy date
 
-Check your rules in the Firebase console before going live.
+Change `LAST_UPDATED` in `lib/config.js`. The privacy page and the footer both read it.
 
-## Known Limitations
+## Notes
 
-- Deleting a CR removes their database records but not their Firebase Authentication account.
-- Attendance can be marked for today and the previous 180 days, not for future dates.
-- The admin page downloads all users, students and attendance at once, so it will slow down as data grows.
-
-## Author
-
-Made by `RamPravesh Saw` as a college project.
+- Contact messages can be sent by anyone. If you get spam, enable Firebase App Check.
+- Anyone who has a message code can read that message and its reply, so codes are long and random.
+- Attendance older than 180 days is removed when a CR opens their dashboard.

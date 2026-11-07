@@ -42,7 +42,6 @@ export default function Register() {
   const [collegeName, setCollegeName] = useState("");
   const [branch, setBranch] = useState("");
   const [section, setSection] = useState("");
-  // const [year, setYear] = useState("");
   const [semester, setSemester] = useState(1);
   const [tgName, setTgName] = useState("");
   const [loading, setLoading] = useState(true);
@@ -107,7 +106,6 @@ export default function Register() {
         collegeName: collegeName.trim(),
         branch: branch.trim(),
         section: section.trim(),
-        // year: year.trim(),
         semester: Number(semester), // 1-8, used as the default semester on the dashboard
         tgName: tgName.trim(),
         email: user.email,
@@ -133,7 +131,7 @@ export default function Register() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
+      <div className="flex-1 bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
         <div className="text-center">
           <div className="w-8 h-8 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
           <p className="text-slate-400 text-sm">
@@ -145,7 +143,7 @@ export default function Register() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6 font-sans">
+    <div className="flex-1 bg-slate-950 text-slate-100 flex items-center justify-center p-6 font-sans">
       <div className="max-w-lg w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl">
         <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500 mb-2 text-center">
           CR Registration Portal
@@ -279,19 +277,6 @@ export default function Register() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              {/* <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Year
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 2nd Year"
-                  value={year}
-                  onChange={(e) => setYear(e.target.value)}
-                  required
-                  className={inputClass}
-                />
-              </div> */}
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1">
                   Current Semester
@@ -325,10 +310,18 @@ export default function Register() {
             </div>
           </div>
 
+          <p className="text-xs text-slate-500 text-center mt-2">
+            By registering you agree to our{" "}
+            <a href="/privacy" className="text-cyan-400 hover:underline">
+              Privacy Policy
+            </a>
+            .
+          </p>
+
           <button
             type="submit"
             disabled={submitting}
-            className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white p-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 transition-all shadow-lg shadow-cyan-900/20 mt-4"
+            className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white p-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 transition-all shadow-lg shadow-cyan-900/20"
           >
             {submitting ? "Creating account..." : "Complete Registration"}
           </button>

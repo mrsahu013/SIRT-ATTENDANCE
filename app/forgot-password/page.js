@@ -3,15 +3,15 @@
 import { useState } from "react";
 import { auth } from "@/lib/firebase";
 import { sendPasswordResetEmail } from "firebase/auth";
-import { useRouter } from "next/navigation";
+
+const GENERIC_MESSAGE =
+  "If an account exists with this email, a password reset link has been sent. Please check your Inbox and Spam folder.";
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const router = useRouter();
 
   const handleResetPassword = async (e) => {
     e.preventDefault();
@@ -20,22 +20,17 @@ export default function ForgotPassword() {
     setLoading(true);
 
     try {
-      // Firebase Auth secure password reset request
       await sendPasswordResetEmail(auth, email.trim());
-
-      // Show the same message either way so we don't reveal which emails are registered
-      setMessage(
-        "If an account exists with this email, a password reset link has been sent. Please check your Inbox and Spam folder.",
-      );
+      // Same message either way so we don't reveal which emails are registered
+      setMessage(GENERIC_MESSAGE);
     } catch (err) {
-      // Agar koi network error ya invalid format ho tabhi error dikhayein
       if (err.code === "auth/invalid-email") {
         setError("Please enter a valid email address.");
+      } else if (err.code === "auth/network-request-failed") {
+        setError("Network error. Check your internet connection.");
       } else {
-        // Security ke liye baaki sabhi cases mein bhi generic message rakhein
-        setMessage(
-          "If an account exists with this email, a password reset link has been sent. Please check your Inbox and Spam folder.",
-        );
+        // Keep the message generic for every other case (security)
+        setMessage(GENERIC_MESSAGE);
       }
     } finally {
       setLoading(false);
@@ -43,13 +38,13 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6 font-sans">
+    <div className="flex-1 bg-slate-950 text-slate-100 flex items-center justify-center p-6 font-sans">
       <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl">
         <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500 mb-2 text-center">
           Reset Password
         </h1>
         <p className="text-slate-400 text-sm text-center mb-6">
-          Enter your email address and we'll send you a link to reset your
+          Enter your email address and we&apos;ll send you a link to reset your
           password.
         </p>
 
@@ -76,6 +71,7 @@ export default function ForgotPassword() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoComplete="email"
               className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:outline-none focus:border-cyan-500 text-slate-200 placeholder:text-slate-600"
             />
           </div>
