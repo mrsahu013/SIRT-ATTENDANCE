@@ -1,13 +1,12 @@
 import Link from "next/link";
-import { RETENTION_DAYS } from "@/lib/config";
+import { RETENTION_DAYS, LAST_UPDATED } from "@/lib/config";
 
 export const metadata = {
   title: "Privacy Policy | Mark Student",
   description: "How Mark Student collects, uses and protects your data.",
 };
 
-const LAST_UPDATED = "November 5, 2026";
-const CONTACT_URL = "contact";
+const CONTACT_URL = "/contact";
 
 function Section({ title, children }) {
   return (
@@ -24,7 +23,7 @@ function Section({ title, children }) {
 
 export default function PrivacyPolicy() {
   return (
-    <div className="min-h-dvh bg-slate-950 text-slate-100 p-4 sm:p-6 md:p-10 font-sans">
+    <div className="flex-1 bg-slate-950 text-slate-100 p-4 sm:p-6 md:p-10 font-sans">
       <div className="max-w-3xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-5 sm:p-8 md:p-10">
         <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500 mb-2">
           Privacy Policy
@@ -72,6 +71,15 @@ export default function PrivacyPolicy() {
             the date, the semester (1 to 8), and the lists of present and absent
             students for that date.
           </p>
+          <p>
+            <span className="text-slate-200 font-medium">
+              Contact messages:
+            </span>{" "}
+            if you use the Contact page (logged in or not), we store your name,
+            email address, the message type, your message, the time sent, and a
+            message code (like MS-XXXXXXXXXX). If we reply, the reply is stored
+            with it.
+          </p>
         </Section>
 
         <Section title="3. How we use your information">
@@ -86,8 +94,11 @@ export default function PrivacyPolicy() {
               you choose to share.
             </li>
             <li>
-              To let the administrator manage accounts and send announcements.
+              To let the administrator manage accounts, correct data when asked
+              or when a mistake is found, and send announcements and password
+              reset emails.
             </li>
+            <li>To read your feedback or questions and reply to you.</li>
           </ul>
           <p>We do not sell your data, show ads, or use it for marketing.</p>
         </Section>
@@ -111,8 +122,16 @@ export default function PrivacyPolicy() {
               You can see the profile, students and attendance you created.
             </li>
             <li>
-              The app administrator can view all CR profiles, student lists and
-              attendance records, and can delete a CR account&apos;s data.
+              The app administrator can view and edit all CR profiles, student
+              lists and attendance records (for example to fix a mistake), and
+              can delete a CR account&apos;s data.
+            </li>
+            <li>
+              The administrator can read all contact messages and write replies.
+            </li>
+            <li>
+              Anyone who has your message code can read your message and our
+              reply, so keep the code private.
             </li>
             <li>
               Anything you share yourself, such as a downloaded JPG or copied
@@ -140,6 +159,12 @@ export default function PrivacyPolicy() {
               itself may remain in Firebase Authentication until deleted on
               request.
             </li>
+            <li>
+              Contact messages are kept until the administrator deletes them.
+              You can ask us to delete yours at any time. They are not tied to
+              your CR account, so deleting a CR account does not remove them
+              automatically.
+            </li>
           </ul>
         </Section>
 
@@ -155,9 +180,10 @@ export default function PrivacyPolicy() {
         <Section title="8. Cookies and local storage">
           <p>
             The app uses browser storage to keep you signed in through Firebase
-            Authentication, to remember the semester you last selected, and to
-            remember which announcement you dismissed. We do not use advertising
-            or tracking cookies.
+            Authentication, to remember the semester you last selected, to
+            remember which announcement you dismissed, and to remember when you
+            last sent a contact message (to limit spam). We do not use
+            advertising or tracking cookies.
           </p>
         </Section>
 
@@ -180,6 +206,14 @@ export default function PrivacyPolicy() {
               You can ask for your account and all related data to be deleted by
               contacting us using the link below.
             </li>
+            <li>
+              You can ask us to correct your CR details, student list or an
+              attendance record if something is wrong.
+            </li>
+            <li>
+              You can ask us to delete any contact message you sent, using your
+              message code.
+            </li>
           </ul>
         </Section>
 
@@ -200,9 +234,9 @@ export default function PrivacyPolicy() {
         <Section title="13. Contact">
           <p>
             For questions or data deletion requests, contact us through{" "}
-            <a href={CONTACT_URL} className="text-cyan-400 hover:underline">
+            <Link href={CONTACT_URL} className="text-cyan-400 hover:underline">
               our contact page
-            </a>
+            </Link>
             .
           </p>
         </Section>
